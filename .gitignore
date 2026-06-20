@@ -1,0 +1,10 @@
+# Secrets — never commit real credentials
+shelly_monitor_esp32/arduino_secrets.h
+
+# Arduino / PlatformIO build artifacts
+build/
+.pio/
+*.bin
+*.elf
+*.hex
+*.map
