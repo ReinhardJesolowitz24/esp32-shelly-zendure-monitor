@@ -79,6 +79,8 @@ lvgl, …) and a factory test program for this panel:
 
 `arduino_secrets.h` is git-ignored — credentials are never committed.
 
+> 📋 Step-by-step flashing checklist: [docs/FLASHING.md](docs/FLASHING.md)
+
 ## ⚠️ Disclaimer
 
 Read-only monitor for display purposes, **not** a certified safety device. The real cell
