@@ -10,15 +10,22 @@
 //
 //  The GIGA sketch is the reference implementation. The port plan:
 //    - WiFi / HTTP client / JSON / control logic  -> ~1:1 (ESP32 WiFi.h)
-//    - Display library: Arduino_GFX or LovyanGFX for the RGB parallel
-//      panel (NOT TFT_eSPI). Adafruit-GFX-compatible, so the drawing
-//      helpers port with renamed calls; colors stay RGB565.
+//    - Display library: LovyanGFX (or Arduino_GFX) for the RGB parallel
+//      panel (NOT TFT_eSPI). Colors stay RGB565.
 //    - Layout coordinates: unchanged (panel is 800x480, same as the GIGA)
 //    - Hardware watchdog: esp_task_wdt instead of mbed::Watchdog
-//    - Enable PSRAM in the board config (framebuffer ~768 KB)
 //
-//  Step 1 on real hardware: get ELECROW's example for this board to show
-//  a test image (confirms panel timing + PSRAM), then drop in the logic.
+//  Arduino IDE board settings (ELECROW, confirmed for the 7" HMI display):
+//    - esp32 core by Espressif, version 2.0.3
+//    - Board: "ESP32S3 Dev Module"
+//    - PSRAM: OPI PSRAM ; Flash Size: 16MB ; Flash Mode: QIO 80MHz
+//    - Partition: "Huge APP (3MB No OTA/1MB SPIFFS)"
+//    - CPU: 240MHz (WiFi) ; Upload Speed: 921600
+//    - Libraries: elecrow.com/download/product/ESP32_Display/Arduino_Libraries.zip
+//
+//  Step 1 on real hardware: flash ELECROW's factory example for this board
+//  to show a test image (confirms panel timing + PSRAM), then drop in the
+//  logic. To enter download mode: hold BOOT, press RESET, then upload.
 //
 //  Copy arduino_secrets.example.h -> arduino_secrets.h before building.
 // =====================================================================

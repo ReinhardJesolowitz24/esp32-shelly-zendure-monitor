@@ -23,13 +23,19 @@ This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1
 
 - **WiFi** (ESP32 Arduino core) — native; `WiFiClient` / `WiFiServer`
 - **ArduinoJson** (>= 7.x)
-- **Arduino_GFX** (`GFX_Library_for_Arduino`) *or* LovyanGFX — for the RGB parallel panel
-  (NOT TFT_eSPI; that is for SPI displays)
+- **LovyanGFX** (or Arduino_GFX) — for the RGB parallel panel.
+  **NOT TFT_eSPI** — ELECROW confirms the 4.3″/5.0″/7.0″ HMI displays do not use it.
 - `esp_task_wdt` (ESP-IDF, built in) — hardware task watchdog
 
+ELECROW ships its own library bundle (LovyanGFX, Arduino_GFX, gt911-arduino touch,
+lvgl, …) and a factory test program for this panel:
+
+- Libraries: <https://www.elecrow.com/download/product/ESP32_Display/Arduino_Libraries.zip>
+- Setup tutorial (4.3″/5.0″/7.0″): <https://www.youtube.com/watch?v=iKJesBu_cg4>
+
 > RGB panels need correct timing parameters (hsync/vsync/pclk/porches). Start from
-> ELECROW's working example for this board, confirm it shows a test image, then drop in
-> the monitor logic.
+> ELECROW's factory example for this exact board, confirm it shows a test image, then
+> drop in the monitor logic.
 
 ## Features (ported from the GIGA version)
 
@@ -49,8 +55,15 @@ This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1
    `shelly_monitor_esp32/arduino_secrets.h`
 2. Fill in **all four** values: WiFi SSID/password + local IPs of the Shelly and Zendure.
    Give each device (and this board) a fixed IP (DHCP reservation) so addresses stay stable.
-3. Arduino IDE: select the ESP32-S3 board, **enable PSRAM**, set the correct flash size,
-   install the libraries above, upload.
+3. Arduino IDE board settings (ELECROW, confirmed for the 7″ HMI display):
+   - Boards Manager → install **esp32 by Espressif, version 2.0.3**
+     (URL: `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`)
+   - Board: **ESP32S3 Dev Module**
+   - **PSRAM: OPI PSRAM**  ·  Flash Size: **16MB (128Mb)**  ·  Flash Mode: QIO 80MHz
+   - Partition Scheme: **Huge APP (3MB No OTA/1MB SPIFFS)**
+   - CPU Frequency: 240MHz (WiFi)  ·  Upload Speed: 921600
+4. Upload: if the IDE can't enter download mode, **hold BOOT, press RESET**
+   (serial shows `waiting for download`), then upload; press **RESET** to run.
 
 `arduino_secrets.h` is git-ignored — credentials are never committed.
 
