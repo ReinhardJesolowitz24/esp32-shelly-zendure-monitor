@@ -14,7 +14,10 @@ This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1
 
 ## Hardware
 
-- **ELECROW CrowPanel ESP32-S3, 7″, 800×480 IPS** (RGB parallel panel, GT911 touch, PSRAM)
+- **ELECROW 7″ HMI ESP32 Display, 800×480 RGB TFT** — ESP32-S3-WROOM-1, 8MB PSRAM,
+  RGB parallel panel (driver EK9716BD3), GT911 capacitive touch. ELECROW sells the
+  same board under two names over time: "ESP32 Display / Wizee" and "CrowPanel ESP32
+  HMI 7.0". (The titles say "ESP32 / LX6" but it is an ESP32-**S3**.)
   - 800×480 — **same resolution as the GIGA display**, so the layout carries over 1:1
 - Shelly Pro 3EM (3-phase grid meter, on the LAN)
 - Zendure SolarFlow (e.g. 2400 / 2400 Pro, on the LAN via WiFi)
@@ -63,7 +66,10 @@ lvgl, …) and a factory test program for this panel:
    - Boards Manager → install **esp32 by Espressif, version 2.0.3**
      (URL: `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`)
    - Board: **ESP32S3 Dev Module**
-   - **PSRAM: OPI PSRAM**  ·  Flash Size: **16MB (128Mb)**  ·  Flash Mode: QIO 80MHz
+   - **PSRAM: OPI PSRAM**  ·  Flash Mode: QIO 80MHz
+   - Flash Size: depends on the ESP32-S3-WROOM-1 variant on the shield —
+     **N16R8 → 16MB** (the guide's default) or **N4R8 → 4MB**. PSRAM is 8MB
+     either way. Check the metal-shield label; if upload fails with 16MB, try 4MB.
    - Partition Scheme: **Huge APP (3MB No OTA/1MB SPIFFS)**
    - CPU Frequency: 240MHz (WiFi)  ·  Upload Speed: 921600
 4. Upload: if the IDE can't enter download mode, **hold BOOT, press RESET**

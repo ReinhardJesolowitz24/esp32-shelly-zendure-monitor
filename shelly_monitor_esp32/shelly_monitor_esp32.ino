@@ -22,7 +22,9 @@
 //  Arduino IDE board settings (ELECROW, confirmed for the 7" HMI display):
 //    - esp32 core by Espressif, version 2.0.3
 //    - Board: "ESP32S3 Dev Module"
-//    - PSRAM: OPI PSRAM ; Flash Size: 16MB ; Flash Mode: QIO 80MHz
+//    - PSRAM: OPI PSRAM ; Flash Mode: QIO 80MHz
+//    - Flash Size: depends on the WROOM-1 variant printed on the shield:
+//      N16R8 -> 16MB (PDF default) ; N4R8 -> 4MB. PSRAM is 8MB either way.
 //    - Partition: "Huge APP (3MB No OTA/1MB SPIFFS)"
 //    - CPU: 240MHz (WiFi) ; Upload Speed: 921600
 //    - Library: Arduino_GFX (from ELECROW's Arduino_Libraries.zip)
