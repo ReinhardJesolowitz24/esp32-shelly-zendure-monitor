@@ -2,7 +2,9 @@
 
 > ⚠️ **Work in progress** — budget ESP32-S3 port of
 > [gigar1-shelly-zendure-monitor](https://github.com/ReinhardJesolowitz24/gigar1-shelly-zendure-monitor).
-> Code port follows once the hardware is in hand.
+> The full monitor logic is ported (display, WiFi, watchdog, alarms, JSON API),
+> but **not yet tested on hardware** — board arrives shortly. Expect to iterate
+> the display config live before this is published.
 
 An **independent**, cloud-free monitor and safety watchdog for a home battery setup,
 running on an **ESP32-S3** with an 800×480 display. It reads a **Shelly Pro 3EM** (grid
