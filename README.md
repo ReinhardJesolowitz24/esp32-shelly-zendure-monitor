@@ -23,8 +23,12 @@ This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1
 
 - **WiFi** (ESP32 Arduino core) — native; `WiFiClient` / `WiFiServer`
 - **ArduinoJson** (>= 7.x)
-- **LovyanGFX** (or Arduino_GFX) — for the RGB parallel panel.
+- **Arduino_GFX** — for the RGB parallel panel.
   **NOT TFT_eSPI** — ELECROW confirms the 4.3″/5.0″/7.0″ HMI displays do not use it.
+  (ELECROW's 7″ factory program uses Arduino_GFX; its pin map + RGB timing are
+  baked into the sketch, so the panel comes up without guesswork.)
+  **No LVGL needed** — Arduino_GFX's Adafruit-GFX API matches the GIGA drawing
+  helpers, so the monitor draws directly (the LVGL demo UI is not used).
 - `esp_task_wdt` (ESP-IDF, built in) — hardware task watchdog
 
 ELECROW ships its own library bundle (LovyanGFX, Arduino_GFX, gt911-arduino touch,
