@@ -93,6 +93,7 @@ public:
 };
 LGFX lcd;
 
+#define FW_VERSION "esp32-1.0"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -459,11 +460,11 @@ void connectWiFi() {
       tBegin = millis();
     }
 
-    // Im Betrieb: erst nach 5 min erfolglosem Reconnect Board neu starten.
-    // (Grosszuegig, damit ein Router-Update / kurzer Netz-Ausfall von 2-3 min
+    // Im Betrieb: erst nach 10 min erfolglosem Reconnect Board neu starten.
+    // (Grosszuegig, damit ein Router-SW-Update / Netz-Ausfall von mehreren min
     //  KEINEN Neustart ausloest - der wuerde sonst das RGB-Kaltstart-Bild riskieren.
     //  Reboot bleibt nur als letzte Rettung bei wirklich haengendem WLAN.)
-    if (wdtActive && (millis() - t0 >= 300000)) {
+    if (wdtActive && (millis() - t0 >= 600000)) {
       drawStatus("Reconnect fehlgeschlagen -> Neustart", COL_BEZUG);
       delay(200);
       ESP.restart();
@@ -606,7 +607,7 @@ void updateHealth(int& state, unsigned int& outCnt, bool apiOk, const char* host
 
 void sendJsonStatus(WiFiClient& c) {
   c.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n");
-  c.print("{\"uptime_s\":");      c.print(millis() / 1000);
+  c.print("{\"fw\":\"" FW_VERSION "\",\"build\":\"" __DATE__ " " __TIME__ "\",\"uptime_s\":");      c.print(millis() / 1000);
   c.print(",\"time\":\"");        c.print(curTime); c.print("\"");
   c.print(",\"netz_w\":");        c.print(gTotal, 0);
   c.print(",\"saldo_kwh\":");     c.print(saldoKwh, 3);
