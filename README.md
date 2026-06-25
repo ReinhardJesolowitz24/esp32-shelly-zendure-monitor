@@ -26,6 +26,8 @@ This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1
   - 800×480 — **same resolution as the GIGA display**, so the layout carries over 1:1
 - Shelly Pro 3EM (3-phase grid meter, on the LAN)
 - Zendure SolarFlow (e.g. 2400 / 2400 Pro, on the LAN via WiFi)
+- **Power:** ~450 mA @ 5 V (**~2.25 W**) in operation — any USB port or a small 5 V
+  charger (≥ 500 mA, 2.5–10 W) is plenty. **No 20 W+ charger needed.**
 
 ## Libraries
 
