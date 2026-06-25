@@ -11,6 +11,10 @@ meter) and a **Zendure SolarFlow** battery **read-only** over their local HTTP A
 shows live data and a daily energy balance, raises a visible alarm on misbehaviour, and
 serves its own JSON API.
 
+![ESP32-S3 running the Shelly Pro 3EM + Zendure monitor on the ELECROW 7″ display](docs/display.jpg)
+
+*Live dashboard on the ELECROW 7″ panel: grid total, per-phase L1/L2/L3, Zendure SoC/output, daily energy balance.*
+
 This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1/3 the cost.
 
 ## Hardware
