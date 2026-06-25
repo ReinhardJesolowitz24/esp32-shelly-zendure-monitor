@@ -25,8 +25,8 @@ ESP32-S3-WROOM-1-N4R8      <-  4 MB Flash, 8 MB PSRAM
       `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
 - [ ] **Tools → Board → Boards Manager** → „esp32" suchen →
       **esp32 by Espressif, Version 2.0.3** installieren
-- [ ] **Arduino_GFX** installieren (aus ELECROWs `Arduino_Libraries.zip` in den
-      `libraries`-Ordner kopieren — das ist die getestete Version für dieses Panel)
+- [ ] **LovyanGFX 1.1.12** über den Library Manager installieren
+      (**1.2.x meiden** — kompiliert nicht auf Core 2.0.3; 1.1.9/1.1.12 sind die 2.0.3-Versionen)
 - [ ] **ArduinoJson** (>= 7.x) über den Library Manager installieren
 
 ---
@@ -83,7 +83,7 @@ ESP32-S3-WROOM-1-N4R8      <-  4 MB Flash, 8 MB PSRAM
   - Flash-Wert mit dem Etikett aus Schritt 0 vergleichen
 - [ ] Danach erscheint das Dashboard + **„Verbinde mit WLAN…"**
 - [ ] Bei Erfolg: **„WLAN verbunden  192.168.x.x"** (diese IP notieren — das ist die API-Adresse)
-- [ ] Serial Monitor (115200 Baud) zeigt dieselben Infos + `Watchdog aktiv, Timeout 40 s`
+- [ ] Serial Monitor (115200 Baud) zeigt dieselben Infos + `Watchdog aktiv, Timeout 120 s`
 
 ---
 
@@ -101,10 +101,10 @@ ESP32-S3-WROOM-1-N4R8      <-  4 MB Flash, 8 MB PSRAM
 | Symptom | Wahrscheinliche Ursache / Lösung |
 |---|---|
 | Display bleibt schwarz | Backlight/Init — Board-Settings prüfen; war Compile wirklich für S3? |
-| Bild flackert / verschoben / Farbsäume | Panel-Timing einer anderen Charge → Timing-Alternativen aus dem ELECROW-Factory-Programm (Zeilen 43–52) testen |
+| Bild flackert / verschoben / Farbsäume / Streifen rechts | Panel-Timing einer anderen Charge → LovyanGFX-Porches im Sketch anpassen (hsync/vsync front/back porch, `pclk_idle_high`) |
 | PSRAM-Zeile rot | „OPI PSRAM" nicht gewählt (Schritt 3) |
 | Compile-Fehler `arduino_secrets.h not found` | Schritt 2 vergessen |
-| Compile-Fehler bei `Arduino_GFX` | falsche/zu neue GFX-Version → die aus ELECROWs ZIP nehmen |
+| Compile-Fehler bei `LovyanGFX` | zu neue Version (1.2.x) auf Core 2.0.3 → **1.1.12** nehmen |
 | Compile-Fehler bei `ledcSetup`/`esp_task_wdt_init` | Core ist nicht 2.0.3 → Schritt 1 prüfen |
 | Hängt in „Verbinde mit WLAN…" | SSID/Passwort in `arduino_secrets.h` falsch; 2,4-GHz-WLAN nötig (kein 5 GHz) |
 | „Shelly-Fehler!" | falsche Shelly-IP, oder Shelly nicht im selben Netz |

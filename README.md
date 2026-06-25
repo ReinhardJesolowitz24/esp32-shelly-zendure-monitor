@@ -1,10 +1,9 @@
 # ESP32 — Shelly Pro 3EM + Zendure SolarFlow Monitor & Watchdog
 
-> ⚠️ **Work in progress** — budget ESP32-S3 port of
-> [gigar1-shelly-zendure-monitor](https://github.com/ReinhardJesolowitz24/gigar1-shelly-zendure-monitor).
-> The full monitor logic is ported (display, WiFi, watchdog, alarms, JSON API),
-> but **not yet tested on hardware** — board arrives shortly. Expect to iterate
-> the display config live before this is published.
+> Budget ESP32-S3 port of
+> [gigar1-shelly-zendure-monitor](https://github.com/ReinhardJesolowitz24/gigar1-shelly-zendure-monitor)
+> — same features, ~1/3 the cost. **Tested on hardware: 24 h+ stable** over a full
+> day/night cycle with the **LovyanGFX** display driver.
 
 An **independent**, cloud-free monitor and safety watchdog for a home battery setup,
 running on an **ESP32-S3** with an 800×480 display. It reads a **Shelly Pro 3EM** (grid
@@ -28,13 +27,16 @@ This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1
 
 - **WiFi** (ESP32 Arduino core) — native; `WiFiClient` / `WiFiServer`
 - **ArduinoJson** (>= 7.x)
-- **Arduino_GFX** — for the RGB parallel panel.
-  **NOT TFT_eSPI** — ELECROW confirms the 4.3″/5.0″/7.0″ HMI displays do not use it.
-  (ELECROW's 7″ factory program uses Arduino_GFX; its pin map + RGB timing are
-  baked into the sketch, so the panel comes up without guesswork.)
-  **No LVGL needed** — Arduino_GFX's Adafruit-GFX API matches the GIGA drawing
-  helpers, so the monitor draws directly (the LVGL demo UI is not used).
-- `esp_task_wdt` (ESP-IDF, built in) — hardware task watchdog
+- **LovyanGFX 1.1.12** — RGB parallel panel driver.
+  **Pin to 1.1.12 (or 1.1.9) on core 2.0.3 — avoid 1.2.x** (it targets newer cores
+  and won't compile on 2.0.3). **NOT TFT_eSPI** — ELECROW confirms the 4.3″/5.0″/7.0″
+  HMI displays don't use it. **No LVGL needed** — LovyanGFX's Adafruit-GFX-style API
+  matches the GIGA drawing helpers, so the monitor draws directly.
+  - *Why LovyanGFX, not Arduino_GFX?* The first port used Arduino_GFX 1.2.8 and
+    crashed every few hours: the RGB framebuffer DMA in PSRAM corrupted WiFi memory
+    under normal load (PANIC / heap corruption). LovyanGFX's PSRAM/DMA management
+    fixes it — identical sketch logic, now 24 h+ stable.
+- `esp_task_wdt` (ESP-IDF, built in) — hardware task watchdog (120 s)
 
 ELECROW ships its own library bundle (LovyanGFX, Arduino_GFX, gt911-arduino touch,
 lvgl, …) and a factory test program for this panel:
@@ -42,9 +44,10 @@ lvgl, …) and a factory test program for this panel:
 - Libraries: <https://www.elecrow.com/download/product/ESP32_Display/Arduino_Libraries.zip>
 - Setup tutorial (4.3″/5.0″/7.0″): <https://www.youtube.com/watch?v=iKJesBu_cg4>
 
-> RGB panels need correct timing parameters (hsync/vsync/pclk/porches). Start from
-> ELECROW's factory example for this exact board, confirm it shows a test image, then
-> drop in the monitor logic.
+> RGB panels need correct timing (hsync/vsync/pclk/porches). This sketch uses the
+> LovyanGFX config for the ELECROW 7″ panel (Sunton-8048S070 timing, PCLK=GPIO0,
+> 8 MHz). If a different panel batch shows shift/stripes, adjust the porches /
+> `pclk_idle_high` in the `LGFX` class.
 
 ## Features (ported from the GIGA version)
 

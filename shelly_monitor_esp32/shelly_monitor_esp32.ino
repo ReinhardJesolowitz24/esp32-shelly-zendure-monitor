@@ -31,7 +31,10 @@
  *   - PSRAM: OPI PSRAM ; Flash Mode: QIO 80MHz
  *   - Flash Size: laut WROOM-1-Variante auf dem Schild (N16R8=16MB / N4R8=4MB)
  *   - Partition: "Huge APP (3MB No OTA/1MB SPIFFS)"
- *   - CPU: 240MHz (WiFi) ; Upload Speed: 921600 ; Library: Arduino_GFX
+ *   - CPU: 240MHz (WiFi) ; Upload Speed: 921600
+ *   - Library: LovyanGFX 1.1.12 (RGB-Panel-Treiber; 1.2.x auf Core 2.0.3 meiden).
+ *     Arduino_GFX 1.2.8 fuehrte unter WLAN-Last zu PSRAM/DMA-Speicherkorruption
+ *     (Crash); LovyanGFX (besseres PSRAM/DMA-Mgmt) laeuft stabil (24h+ getestet).
  *   - Download-Modus falls noetig: BOOT halten, RESET druecken, dann Upload.
  *
  * HAFTUNG: Anzeige-/Monitorwerkzeug, KEIN zertifiziertes Schutzgeraet.
@@ -42,40 +45,67 @@
 
 #include <WiFi.h>
 #include <ArduinoJson.h>
-#include <Arduino_GFX_Library.h>
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+#include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 #include "esp_task_wdt.h"     // Hardware-Task-Watchdog (ESP32)
+#include "esp_system.h"       // esp_reset_reason()
 #include "arduino_secrets.h"  // WLAN + Geraete-IPs (NICHT eingecheckt)
 
-// ── Display: ELECROW 7" RGB-Parallel-Panel ────────────────────────────────────
-// Pinbelegung + Timing VERBATIM aus ELECROWs offiziellem 7.0"-Factory-Programm
-// (LvglWidgets-LVGL-7.0) -> bekannt-gut fuer genau dieses Board.
+// ── Display: ELECROW 7" RGB-Parallel-Panel via LovyanGFX ──────────────────────
+// LGFX-Konfig nach Vorlage LGFX_Sunton_ESP32-8048S070 (pin-identisch), angepasst:
+// PCLK=GPIO0 (ELECROW) + unsere verifizierten Factory-Timings + pclk_active_neg=0.
+// Kein Touch (brauchen wir nicht). Framebuffer in PSRAM (use_psram=1).
 #define TFT_BL 2
 
-Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
-  GFX_NOT_DEFINED /* CS */, GFX_NOT_DEFINED /* SCK */, GFX_NOT_DEFINED /* SDA */,
-  41 /* DE */, 40 /* VSYNC */, 39 /* HSYNC */, 0 /* PCLK */,
-  14 /* R0 */, 21 /* R1 */, 47 /* R2 */, 48 /* R3 */, 45 /* R4 */,
-  9  /* G0 */, 46 /* G1 */, 3  /* G2 */, 8  /* G3 */, 16 /* G4 */, 1 /* G5 */,
-  15 /* B0 */, 7  /* B1 */, 6  /* B2 */, 5  /* B3 */, 4  /* B4 */
-);
-Arduino_RPi_DPI_RGBPanel *gfx = new Arduino_RPi_DPI_RGBPanel(
-  rgbpanel,
-  800 /* width  */, 0 /* hsync_polarity */, 210 /* hsync_front_porch */, 1 /* hsync_pulse_width */, 46 /* hsync_back_porch */,
-  480 /* height */, 0 /* vsync_polarity */, 22  /* vsync_front_porch */, 1 /* vsync_pulse_width */, 23 /* vsync_back_porch */,
-  0 /* pclk_active_neg */, 16000000 /* prefer_speed */, true /* auto_flush */
-);
+class LGFX : public lgfx::LGFX_Device {
+public:
+  lgfx::Bus_RGB   _bus;
+  lgfx::Panel_RGB _panel;
+  lgfx::Light_PWM _light;
+  LGFX(void) {
+    { auto c = _panel.config();
+      c.memory_width = 800; c.memory_height = 480;
+      c.panel_width  = 800; c.panel_height  = 480;
+      c.offset_x = 0; c.offset_y = 0;
+      _panel.config(c); }
+    { auto c = _panel.config_detail();
+      c.use_psram = 1;                  // Framebuffer in PSRAM (Pflicht bei 800x480)
+      _panel.config_detail(c); }
+    { auto c = _bus.config();
+      c.panel = &_panel;
+      c.pin_d0  = 15; c.pin_d1  = 7;  c.pin_d2  = 6;  c.pin_d3  = 5;  c.pin_d4  = 4;   // B0-B4
+      c.pin_d5  = 9;  c.pin_d6  = 46; c.pin_d7  = 3;  c.pin_d8  = 8;  c.pin_d9  = 16; c.pin_d10 = 1;  // G0-G5
+      c.pin_d11 = 14; c.pin_d12 = 21; c.pin_d13 = 47; c.pin_d14 = 48; c.pin_d15 = 45;  // R0-R4
+      c.pin_henable = 41; c.pin_vsync = 40; c.pin_hsync = 39; c.pin_pclk = 0;          // ELECROW: PCLK=GPIO0
+      c.freq_write = 8000000;           // 8 MHz: sparsam + saubere Vergleichsmessung zum Arduino_GFX-Build + weniger FB<->WLAN-Bandbreite (Geometrie bleibt, nur Refresh ~17Hz)
+      c.hsync_polarity = 0; c.hsync_front_porch = 80; c.hsync_pulse_width = 4; c.hsync_back_porch = 16;
+      c.vsync_polarity = 0; c.vsync_front_porch = 22; c.vsync_pulse_width = 4; c.vsync_back_porch = 4;
+      c.pclk_active_neg = 0;            // KOMPLETTE Sunton-LovyanGFX-Referenz (Arduino_GFX-Porches passten nicht: hfp=210 schob Bild nach rechts)
+      c.de_idle_high = 0; c.pclk_idle_high = 1;
+      _bus.config(c); }
+    _panel.setBus(&_bus);
+    { auto c = _light.config(); c.pin_bl = TFT_BL; _light.config(c); }
+    _panel.light(&_light);
+    setPanel(&_panel);
+  }
+};
+LGFX lcd;
 
 #define SCREEN_W   800
 #define SCREEN_H   480
 
-#define COL_BG       0x0841
-#define COL_TITLE    0x2C9F
-#define COL_EINSPEIS 0x07E0   // gruen  (Einspeisung, positiv)
-#define COL_BEZUG    0xF800   // rot    (Bezug, negativ)
-#define COL_VAL      0xFFFF   // weiss
-#define COL_UNIT     0x8C51   // grau
-#define COL_ZEN      0xFFE0   // gelb
-#define COL_LINE     0x39E7
+// LovyanGFX: Farben MUESSEN uint16_t-typisiert sein -> wird als RGB565 gedeutet
+// (ein int-Literal wuerde als RGB888/24-Bit interpretiert -> falsche Farben!).
+static const uint16_t COL_BG       = 0x0841;
+static const uint16_t COL_TITLE    = 0x2C9F;
+static const uint16_t COL_EINSPEIS = 0x07E0;   // gruen  (Einspeisung, positiv)
+static const uint16_t COL_BEZUG    = 0xF800;   // rot    (Bezug, negativ)
+static const uint16_t COL_VAL      = 0xFFFF;   // weiss
+static const uint16_t COL_UNIT     = 0x8C51;   // grau
+static const uint16_t COL_ZEN      = 0xFFE0;   // gelb
+static const uint16_t COL_LINE     = 0x39E7;
 
 // ── Zugangsdaten / Geraete-IPs aus arduino_secrets.h ──────────────────────────
 const char* WIFI_SSID     = SECRET_SSID;
@@ -92,11 +122,22 @@ const int   ZEN_PORT = 80;
 const unsigned long POLL_MS = 1000;    // Shelly Leistung/Phasen
 const unsigned long ZEN_MS  = 3000;    // Zendure (read-only)
 const unsigned long SLOW_MS = 15000;   // Zeit + Energiezaehler
-unsigned long lastPoll = 0, lastZen = 0, lastSlow = 0;
+// Getaktete Abfrage-Sequenz: immer nur EINE Verbindung gleichzeitig, mit Pausen
+// -> minimaler TCP-Churn, kein Ueberlappen. Schritt 0=Shelly EM, 1=Zendure, 2=Slow (Zeit+Energie).
+const uint8_t  POLL_SEQ[] = {0, 1, 0, 1, 2};   // 2x (EM, Zendure), dann 1x Slow(Sys+EMData) -> 5 Schritte/Zyklus
+const int      SEQ_LEN    = sizeof(POLL_SEQ);
+const unsigned long STEP_MS = 3000;            // 3 s Pause zwischen den Anfragen
+int            seqIdx   = 0;
+unsigned long  lastStep = 0;
+// Zendure haengt oefter (V2.0.0): nach Fehlversuch 5 min Pause -> entlastet WLAN-Stack (weniger Churn gegen toten Endpunkt)
+unsigned long  znPauseUntil = 0;
+const unsigned long ZEN_PAUSE_MS = 300000UL;   // 5 min
 const unsigned long BEAT_MS = 1000;    // Heartbeat-Blinken (zeigt: Sketch laeuft)
 unsigned long lastBeat = 0;
 bool beatOn = false;
 bool wdtActive = false;   // Watchdog erst nach WLAN-Erstverbindung aktiv
+const char* resetReason = "?";   // Grund des letzten Boots (esp_reset_reason)
+char httpBuf[4096];              // fester HTTP-Antwort-Puffer (statt String -> keine Heap-Fragmentierung)
 
 // ── Messwerte ────────────────────────────────────────────────────────────────
 float gTotal = 0;
@@ -125,6 +166,8 @@ int dbBms = 0, dbSoc = 0, dbBal = 0, dbWarn = 0;
 
 // Geraete-Health: 0=ok, 1=haengt (TCP ok, API nein), 2=offline (kein TCP)
 int shState = 0, znState = 0;
+int shFailCount = 0;                 // aufeinanderfolgende Shelly-Fehlversuche (Entprellung)
+const int SH_FAIL_N = 3;             // "Shelly-Fehler" erst nach 3 Fehlern in Folge (transiente Blips ignorieren)
 unsigned int shOut = 0, znOut = 0;        // Ausfall-Episoden kumuliert (ok -> nicht-ok)
 unsigned int pshOut = 0, pznOut = 0;      // Snapshot der letzten Mitternacht
 int  zFault = 0, zErr = 0;                  // BMS faultLevel / is_error
@@ -169,11 +212,11 @@ const int CX_L3  = 630;
 
 // ───────────────────────────────────────────────────────────────────────────
 void printAt(int x, int y, const char* t, uint8_t sz, uint16_t col) {
-  gfx->setTextSize(sz);
-  gfx->setTextColor(col, COL_BG);
-  gfx->setTextWrap(false);
-  gfx->setCursor(x, y);
-  gfx->print(t);
+  lcd.setTextSize(sz);
+  lcd.setTextColor(col, COL_BG);
+  lcd.setTextWrap(false);
+  lcd.setCursor(x, y);
+  lcd.print(t);
 }
 void printCentered(const char* text, int y, uint8_t sz, uint16_t color) {
   int16_t tw = strlen(text) * 6 * sz;
@@ -182,14 +225,33 @@ void printCentered(const char* text, int y, uint8_t sz, uint16_t color) {
   printAt(x, y, text, sz, color);
 }
 
+// ── Dirty-Cache: nur neu zeichnen, wenn sich der Wert geaendert hat ───────────
+// (weniger Framebuffer-Schreibzugriffe -> weniger Kollision mit dem WLAN-Speicher)
+long dcTotal = -999999L;
+long dcP[3] = {-999999L,-999999L,-999999L}, dcU[3] = {-999999L,-999999L,-999999L}, dcI[3] = {-999999L,-999999L,-999999L};
+int  dcSoc = -999, dcZOut = -999, dcZAc = -999, dcZnState = -999;
+long dcSaldo = -999999L, dcBezug = -999999L, dcEinsp = -999999L;
+char dcTime[8] = "";
+long dcCntF=-1, dcCntS=-1, dcCntD=-1, dcCntB=-1, dcCntW=-1;
+char dcStatus[64] = ""; uint16_t dcStatusCol = 0xFFFF;
+void invalidateDirtyCache() {   // erzwingt Neuzeichnen aller dynamischen Felder (nach Vollbild-Repaint)
+  dcTotal = -999999L;
+  for (int k=0;k<3;k++){ dcP[k]=dcU[k]=dcI[k]=-999999L; }
+  dcSoc=dcZOut=dcZAc=dcZnState=-999;
+  dcSaldo=dcBezug=dcEinsp=-999999L;
+  dcTime[0]=0;
+  dcCntF=dcCntS=dcCntD=dcCntB=dcCntW=-1;
+  dcStatus[0]=0;
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 void drawStaticLayout() {
-  gfx->fillScreen(COL_BG);
+  lcd.fillScreen(COL_BG);
   printAt(20, 8, "Shelly Pro 3EM - Monitor", 3, COL_TITLE);
-  gfx->drawFastHLine(10, 42, SCREEN_W - 20, COL_LINE);
+  lcd.drawFastHLine(10, 42, SCREEN_W - 20, COL_LINE);
 
   printCentered("Netz gesamt [W]   (gruen=Einspeisung / rot=Bezug)", 50, 2, COL_UNIT);
-  gfx->drawFastHLine(10, 150, SCREEN_W - 20, COL_LINE);
+  lcd.drawFastHLine(10, 150, SCREEN_W - 20, COL_LINE);
 
   printAt(CX_L1, 162, "L1", 2, COL_TITLE);
   printAt(CX_L2, 162, "L2", 2, COL_TITLE);
@@ -197,24 +259,29 @@ void drawStaticLayout() {
   printAt(CX_LBL, 192, "P [W]", 2, COL_UNIT);
   printAt(CX_LBL, 224, "U [V]", 2, COL_UNIT);
   printAt(CX_LBL, 256, "I [A]", 2, COL_UNIT);
-  gfx->drawFastHLine(10, 292, SCREEN_W - 20, COL_LINE);
+  lcd.drawFastHLine(10, 292, SCREEN_W - 20, COL_LINE);
 
-  gfx->drawFastHLine(10, 322, SCREEN_W - 20, COL_LINE);
+  lcd.drawFastHLine(10, 322, SCREEN_W - 20, COL_LINE);
   printCentered("Tagessaldo [kWh] seit 0:00   (+ Einspeisung / - Bezug)", 330, 2, COL_UNIT);
-  gfx->drawFastHLine(10, 420, SCREEN_W - 20, COL_LINE);
+  lcd.drawFastHLine(10, 420, SCREEN_W - 20, COL_LINE);
 }
 
 void drawTime() {
-  gfx->fillRect(630, 6, SCREEN_W - 630, 34, COL_BG);
+  if (strcmp(curTime.c_str(), dcTime) == 0) return;     // unveraendert -> nicht neu zeichnen
+  strncpy(dcTime, curTime.c_str(), sizeof(dcTime) - 1); dcTime[sizeof(dcTime) - 1] = 0;
+  lcd.fillRect(630, 6, SCREEN_W - 630, 34, COL_BG);
   printAt(660, 12, curTime.c_str(), 3, COL_VAL);
 }
 
 void drawHeartbeat(bool on) {
-  gfx->fillCircle(615, 22, 6, on ? COL_EINSPEIS : COL_BG);   // gruener Punkt blinkt (Sketch lebt)
+  lcd.fillCircle(615, 22, 6, on ? COL_EINSPEIS : COL_BG);   // gruener Punkt blinkt (Sketch lebt)
 }
 
 void drawTotal(float p) {
-  gfx->fillRect(0, 78, SCREEN_W, 68, COL_BG);
+  long v = lroundf(p);
+  if (v == dcTotal) return;                              // gleicher gerundeter Wert -> nicht neu zeichnen
+  dcTotal = v;
+  lcd.fillRect(0, 78, SCREEN_W, 68, COL_BG);
   char buf[20]; snprintf(buf, sizeof(buf), "%.0f", p);
   printCentered(buf, 82, 7, (p < 0) ? COL_BEZUG : COL_EINSPEIS);
 }
@@ -226,14 +293,23 @@ void drawCell(int x, int y, float val, const char* fmt, bool colorBySign) {
 }
 
 void drawPhases() {
-  gfx->fillRect(CX_L1 - 5, 185, SCREEN_W - CX_L1, 95, COL_BG);
+  long p[3] = {lroundf(pA), lroundf(pB), lroundf(pC)};
+  long u[3] = {lroundf(uA*10), lroundf(uB*10), lroundf(uC*10)};   // 0,1-V-Aufloesung
+  long c[3] = {lroundf(iA*10), lroundf(iB*10), lroundf(iC*10)};   // 0,1-A-Aufloesung
+  bool same = true;
+  for (int k=0;k<3;k++) if (p[k]!=dcP[k] || u[k]!=dcU[k] || c[k]!=dcI[k]) same = false;
+  if (same) return;                                     // nichts geaendert -> nicht neu zeichnen
+  for (int k=0;k<3;k++){ dcP[k]=p[k]; dcU[k]=u[k]; dcI[k]=c[k]; }
+  lcd.fillRect(CX_L1 - 5, 185, SCREEN_W - CX_L1, 95, COL_BG);
   drawCell(CX_L1, 192, pA, "%.0f", true);  drawCell(CX_L2, 192, pB, "%.0f", true);  drawCell(CX_L3, 192, pC, "%.0f", true);
   drawCell(CX_L1, 224, uA, "%.1f", false); drawCell(CX_L2, 224, uB, "%.1f", false); drawCell(CX_L3, 224, uC, "%.1f", false);
   drawCell(CX_L1, 256, iA, "%.1f", false); drawCell(CX_L2, 256, iB, "%.1f", false); drawCell(CX_L3, 256, iC, "%.1f", false);
 }
 
 void drawZendure() {
-  gfx->fillRect(0, 300, SCREEN_W, 20, COL_BG);
+  if (zSoc==dcSoc && zOut==dcZOut && zAc==dcZAc && znState==dcZnState) return;   // unveraendert
+  dcSoc=zSoc; dcZOut=zOut; dcZAc=zAc; dcZnState=znState;
+  lcd.fillRect(0, 300, SCREEN_W, 20, COL_BG);
   char buf[70];
   if      (znState == 2) snprintf(buf, sizeof(buf), "Zendure: OFFLINE (kein TCP)");
   else if (znState == 1) snprintf(buf, sizeof(buf), "Zendure: API haengt (Geraet laeuft)");
@@ -243,21 +319,28 @@ void drawZendure() {
 }
 
 void drawSaldo() {
-  gfx->fillRect(0, 358, SCREEN_W, 38, COL_BG);
+  long s=lroundf(saldoKwh*1000), b=lroundf(bezugKwh*1000), e=lroundf(einspKwh*1000);
+  if (s==dcSaldo && b==dcBezug && e==dcEinsp) return;   // unveraendert (mWh-Aufloesung)
+  dcSaldo=s; dcBezug=b; dcEinsp=e;
+  lcd.fillRect(0, 358, SCREEN_W, 38, COL_BG);
   char buf[24]; snprintf(buf, sizeof(buf), "%+.3f kWh", saldoKwh);
   printCentered(buf, 360, 4, (saldoKwh < 0) ? COL_BEZUG : COL_EINSPEIS);
-  gfx->fillRect(0, 398, SCREEN_W, 18, COL_BG);
+  lcd.fillRect(0, 398, SCREEN_W, 18, COL_BG);
   char c2[64]; snprintf(c2, sizeof(c2), "Bezug %.3f kWh    Einspeisung %.3f kWh", bezugKwh, einspKwh);
   printCentered(c2, 398, 2, COL_UNIT);
 }
 
 void drawStatus(const char* text, uint16_t color) {
-  gfx->fillRect(0, 448, SCREEN_W, 30, COL_BG);
+  if (strcmp(text, dcStatus) == 0 && color == dcStatusCol) return;   // unveraendert
+  strncpy(dcStatus, text, sizeof(dcStatus) - 1); dcStatus[sizeof(dcStatus) - 1] = 0; dcStatusCol = color;
+  lcd.fillRect(0, 448, SCREEN_W, 30, COL_BG);
   printCentered(text, 452, 2, color);
 }
 
 void drawCounters() {
-  gfx->fillRect(0, 424, SCREEN_W, 16, COL_BG);
+  if ((long)cntFault==dcCntF && (long)cntSoc==dcCntS && (long)cntDump==dcCntD && (long)cntBalance==dcCntB && (long)cntWarn==dcCntW) return;  // unveraendert
+  dcCntF=cntFault; dcCntS=cntSoc; dcCntD=cntDump; dcCntB=cntBalance; dcCntW=cntWarn;
+  lcd.fillRect(0, 424, SCREEN_W, 16, COL_BG);
   char buf[96];
   snprintf(buf, sizeof(buf), "Ereignisse:  BMS %u  Tief %u  Netz %u  Bal %u  Warn %u", cntFault, cntSoc, cntDump, cntBalance, cntWarn);
   uint16_t col = COL_UNIT;
@@ -269,8 +352,8 @@ void drawCounters() {
 
 void drawAlarmOverlay(bool on) {
   uint16_t c = on ? COL_BEZUG : COL_BG;
-  for (int k = 0; k < 6; k++) gfx->drawRect(k, k, SCREEN_W - 2 * k, SCREEN_H - 2 * k, c);
-  gfx->fillRect(0, 440, SCREEN_W, 40, on ? COL_BEZUG : COL_BG);
+  for (int k = 0; k < 6; k++) lcd.drawRect(k, k, SCREEN_W - 2 * k, SCREEN_H - 2 * k, c);
+  lcd.fillRect(0, 440, SCREEN_W, 40, on ? COL_BEZUG : COL_BG);
   if (on) printCentered(alarmText, 450, 2, COL_VAL);
 }
 
@@ -349,6 +432,7 @@ void evalAlarm(unsigned long now) {
 }
 
 void repaintAll() {
+  invalidateDirtyCache();   // nach Vollbild-Loeschung muessen alle dynamischen Felder neu gezeichnet werden
   drawStaticLayout(); drawTime(); drawTotal(gTotal); drawPhases(); drawZendure(); drawSaldo(); drawCounters();
 }
 
@@ -358,20 +442,28 @@ void connectWiFi() {
   unsigned long t0 = millis();        // Start dieses Verbindungsversuchs
   unsigned long tBegin = millis();    // Zeitpunkt des letzten WiFi.begin()
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);   // Modem-Sleep AUS -> stabileres WLAN (weniger Abbrueche + Latenz unter Panel-/CPU-Last)
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     if (wdtActive) esp_task_wdt_reset();
 
-    // Alle 12 s frischer Versuch (Modul aus haengendem Zustand holen)
+    // Alle 12 s KRAEFTIGER Reconnect: Funk komplett aus/an -> holt ein haengendes
+    // WLAN zurueck, ohne dass ein Chip-Reboot noetig wird (vermeidet SW-Reset + Bildversatz).
     if (millis() - tBegin >= 12000) {
-      WiFi.disconnect();
+      WiFi.disconnect(true);          // Verbindung trennen + Funk aus
+      delay(200);
+      WiFi.mode(WIFI_STA);
+      WiFi.setSleep(false);           // Modem-Sleep wieder aus
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
       tBegin = millis();
     }
 
-    // Im Betrieb: nach 90 s erfolglosem Reconnect Board neu starten
-    if (wdtActive && (millis() - t0 >= 90000)) {
+    // Im Betrieb: erst nach 5 min erfolglosem Reconnect Board neu starten.
+    // (Grosszuegig, damit ein Router-Update / kurzer Netz-Ausfall von 2-3 min
+    //  KEINEN Neustart ausloest - der wuerde sonst das RGB-Kaltstart-Bild riskieren.
+    //  Reboot bleibt nur als letzte Rettung bei wirklich haengendem WLAN.)
+    if (wdtActive && (millis() - t0 >= 300000)) {
       drawStatus("Reconnect fehlgeschlagen -> Neustart", COL_BEZUG);
       delay(200);
       ESP.restart();
@@ -381,23 +473,27 @@ void connectWiFi() {
   drawStatus(("WLAN verbunden  " + myIp).c_str(), COL_EINSPEIS);
 }
 
-bool httpGetBody(const char* host, int port, const char* path, String& body) {
+// Liest den HTTP-Body in einen FESTEN char-Puffer (kein String -> keine Heap-Fragmentierung).
+bool httpGetBody(const char* host, int port, const char* path, char* out, size_t outSize) {
   WiFiClient client;
-  if (!client.connect(host, port, 4000)) return false;   // 4 s Connect-Timeout
-  client.print(String("GET ") + path + " HTTP/1.0\r\nHost: " + host + "\r\nConnection: close\r\n\r\n");
+  if (!client.connect(host, port, 7500)) return false;   // 7,5 s Connect-Timeout (Stabilitaet > Tempo)
+  char req[160];
+  snprintf(req, sizeof(req), "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
+  client.print(req);
   unsigned long t = millis();
-  while (!client.available() && millis() - t < 5000) delay(10);
+  while (!client.available() && millis() - t < 9400) delay(10);
   if (!client.available()) { client.stop(); return false; }
-  String s = client.readStringUntil('\n');
+  String s = client.readStringUntil('\n');                       // Statuszeile (1x pro Fetch)
   if (s.indexOf("200") == -1) { client.stop(); return false; }
   while (client.connected()) { String l = client.readStringUntil('\n'); l.trim(); if (l.length() == 0) break; }
-  body = ""; unsigned long t2 = millis();
+  size_t n = 0; unsigned long t2 = millis();
   while (client.connected() || client.available()) {
-    if (client.available()) body += (char)client.read();
-    else if (millis() - t2 > 3000) break;
+    if (client.available()) { char ch = (char)client.read(); if (n < outSize - 1) out[n++] = ch; }  // Puffer voll -> Rest verwerfen (Socket leeren)
+    else if (millis() - t2 > 5600) break;
   }
+  out[n] = 0;
   client.stop();
-  return body.length() > 0;
+  return n > 0;
 }
 
 int parseMinuteOfDay(const String& t) {
@@ -409,8 +505,8 @@ int parseMinuteOfDay(const String& t) {
 }
 
 bool fetchShelly() {
-  String body; if (!httpGetBody(SHELLY_HOST, SHELLY_PORT, SHELLY_PATH, body)) return false;
-  JsonDocument doc; if (deserializeJson(doc, body)) return false;
+  if (!httpGetBody(SHELLY_HOST, SHELLY_PORT, SHELLY_PATH, httpBuf, sizeof(httpBuf))) return false;
+  JsonDocument doc; if (deserializeJson(doc, httpBuf)) return false;
   gTotal = doc["total_act_power"].as<float>() * -1.0f;   // <0=Bezug, >0=Einspeisung
   pA = doc["a_act_power"].as<float>() * -1.0f;
   pB = doc["b_act_power"].as<float>() * -1.0f;
@@ -421,8 +517,8 @@ bool fetchShelly() {
 }
 
 bool fetchZendure() {
-  String body; if (!httpGetBody(ZEN_HOST, ZEN_PORT, "/properties/report", body)) return false;
-  JsonDocument doc; if (deserializeJson(doc, body)) return false;
+  if (!httpGetBody(ZEN_HOST, ZEN_PORT, "/properties/report", httpBuf, sizeof(httpBuf))) return false;
+  JsonDocument doc; if (deserializeJson(doc, httpBuf)) return false;
   JsonObject pr = doc["properties"]; if (pr.isNull()) return false;
   zSoc   = pr["electricLevel"] | -1;
   zOut   = pr["outputHomePower"] | 0;
@@ -448,16 +544,15 @@ bool fetchZendure() {
 
 // Zeit (Sys.GetStatus) + Energiezaehler (EMData.GetStatus), Tagessaldo
 bool fetchSlow() {
-  String body;
-  if (httpGetBody(SHELLY_HOST, SHELLY_PORT, "/rpc/Sys.GetStatus", body)) {
-    JsonDocument d; if (!deserializeJson(d, body)) {
+  if (httpGetBody(SHELLY_HOST, SHELLY_PORT, "/rpc/Sys.GetStatus", httpBuf, sizeof(httpBuf))) {
+    JsonDocument d; if (!deserializeJson(d, httpBuf)) {
       const char* tm = d["time"] | "";
       if (strlen(tm) >= 4) curTime = String(tm);
       sysEpoch = d["unixtime"] | sysEpoch;
     }
   }
-  if (!httpGetBody(SHELLY_HOST, SHELLY_PORT, "/rpc/EMData.GetStatus?id=0", body)) return false;
-  JsonDocument d2; if (deserializeJson(d2, body)) return false;
+  if (!httpGetBody(SHELLY_HOST, SHELLY_PORT, "/rpc/EMData.GetStatus?id=0", httpBuf, sizeof(httpBuf))) return false;
+  JsonDocument d2; if (deserializeJson(d2, httpBuf)) return false;
   impWh = d2["total_act"]     | impWh;   // Bezug gesamt (Wh)
   retWh = d2["total_act_ret"] | retWh;   // Einspeisung gesamt (Wh)
 
@@ -499,7 +594,7 @@ bool fetchSlow() {
 // ── JSON-API (HTTP-Server) ────────────────────────────────────────────────────
 int classifyFail(const char* host) {     // 1 = haengt (TCP ok, API nein), 2 = offline (kein TCP)
   WiFiClient c;
-  bool tcp = c.connect(host, 80, 2000);
+  bool tcp = c.connect(host, 80, 3750);
   c.stop();
   return tcp ? 1 : 2;
 }
@@ -531,6 +626,8 @@ void sendJsonStatus(WiFiClient& c) {
   c.print(",\"zendure_state\":"); c.print(znState);
   c.print(",\"shelly_out\":");    c.print(shOut);
   c.print(",\"zendure_out\":");   c.print(znOut);
+  c.print(",\"reset_reason\":\""); c.print(resetReason); c.print("\"");
+  c.print(",\"free_heap\":");     c.print(ESP.getFreeHeap());
   c.print("}");
 }
 
@@ -594,24 +691,38 @@ void handleApi() {
     c.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n");
     c.print("ShellyMonitor API:  /status   /balance   /daily");
   }
-  delay(2);
+  c.flush();        // sicherstellen, dass auch kleine Antworten ('/daily' leer) raus sind
+  delay(10);        // kurz warten, bevor der Socket geschlossen wird (sonst TCP-RST -> Datenverlust)
   c.stop();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+static const char* rrStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";      // Absturz (Exception)
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";   // unser Watchdog
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";   // Spannungseinbruch
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_EXT:       return "EXT";
+    default:                return "UNKNOWN";
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(200);
+  resetReason = rrStr(esp_reset_reason());
+  Serial.printf("Reset-Grund (letzter Boot): %s\n", resetReason);
 
-  // Backlight an
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
-  ledcSetup(1, 300, 8);
-  ledcAttachPin(TFT_BL, 1);
-  ledcWrite(1, 255);              // Helligkeit 0..255
-
-  gfx->begin();
-  gfx->fillScreen(COL_BG);
+  // Display init (LovyanGFX) - Backlight uebernimmt Light_PWM aus der LGFX-Konfig
+  lcd.init();
+  lcd.setBrightness(255);
+  lcd.setFont(&fonts::Font0);    // klassische 6x8-Schrift (passt zur Layout-Mathematik)
+  lcd.fillScreen(COL_BG);
 
   // Flash/PSRAM-Check: Variante des Boards beim ersten Boot ablesen
   uint32_t flashMB = ESP.getFlashChipSize() / (1024 * 1024);
@@ -631,11 +742,12 @@ void setup() {
   apiServer.begin();   // JSON-API starten (nach WLAN-Verbindung)
 
   // Hardware-Task-Watchdog ERST JETZT starten (nach erfolgreicher WLAN-Verbindung),
-  // damit ein langsamer Verbindungsaufbau keinen Reboot-Loop ausloest. 40 s.
-  esp_task_wdt_init(40, true);   // Timeout 40 s, panic+reboot bei Ablauf
+  // damit ein langsamer Verbindungsaufbau keinen Reboot-Loop ausloest. 120 s.
+  esp_task_wdt_init(120, true);  // Timeout 120 s: deckt groesseren Worst-Case (mehrere Netz-Timeouts/Loop) ab, faengt echte Freezes
+
   esp_task_wdt_add(NULL);        // diese (loop-)Task ueberwachen
   wdtActive = true;
-  Serial.println("Watchdog aktiv, Timeout 40 s");
+  Serial.println("Watchdog aktiv, Timeout 120 s");
   Serial.println("CSV,BAL,time,soc,cellMax,cellMin,spread_mV");   // Kopfzeile fuers Balancing-Log
 }
 
@@ -646,33 +758,50 @@ void loop() {
 
   if (now - lastBeat >= BEAT_MS) { lastBeat = now; beatOn = !beatOn; drawHeartbeat(beatOn); }
 
-  if (now - lastPoll >= POLL_MS) {
-    lastPoll = now;
+  // Getaktete Abfrage: pro STEP_MS genau EINE Anfrage (nie ueberlappend -> wenig TCP-Churn)
+  if (now - lastStep >= STEP_MS) {
+    lastStep = now;
     if (WiFi.status() != WL_CONNECTED) { drawStatus("WLAN getrennt...", COL_BEZUG); connectWiFi(); }
     else {
-      bool shOk = fetchShelly();
-      updateHealth(shState, shOut, shOk, SHELLY_HOST);
-      if (shOk) {
-        drawTotal(gTotal); drawPhases();
-        evalAlarm(now);
-        drawCounters();
-        if (!alarmActive) {
-          if (warnActive)         drawStatus(warnText, COL_ZEN);                           // gelb: unbekanntes Flag
-          else if (balanceActive) { int sp=(cellMax-cellMin)*10; char bs[56]; snprintf(bs,sizeof(bs),"Zell-Balancing  Spreizung %d mV (Rekord %d)", sp, balSpreadMax); drawStatus(bs, COL_TITLE); } // blau: harmlos
-          else { char st[56]; snprintf(st, sizeof(st), "IP %s   |   Laufzeit %lus", myIp.c_str(), now / 1000); drawStatus(st, COL_UNIT); }
+      uint8_t step = POLL_SEQ[seqIdx];
+      seqIdx = (seqIdx + 1) % SEQ_LEN;
+
+      if (step == 0) {                         // Shelly Leistung/Phasen (Live)
+        bool shOk = fetchShelly();
+        if (shOk) {
+          shFailCount = 0;
+          updateHealth(shState, shOut, true, SHELLY_HOST);
+          drawTotal(gTotal); drawPhases();
+          evalAlarm(now);
+          drawCounters();
+          if (!alarmActive) {
+            if (warnActive)         drawStatus(warnText, COL_ZEN);                           // gelb: unbekanntes Flag
+            else if (balanceActive) { int sp=(cellMax-cellMin)*10; char bs[56]; snprintf(bs,sizeof(bs),"Zell-Balancing  Spreizung %d mV (Rekord %d)", sp, balSpreadMax); drawStatus(bs, COL_TITLE); } // blau: harmlos
+            else { char st[64]; unsigned long up=now/1000; snprintf(st, sizeof(st), "IP %s   |   Laufzeit %lud %luh %lum", myIp.c_str(), up/86400, (up%86400)/3600, (up%3600)/60); drawStatus(st, COL_UNIT); }
+          }
+        } else {
+          shFailCount++;
+          if (shFailCount >= SH_FAIL_N) {       // erst nach N Fehlern in Folge als echter Ausfall werten
+            updateHealth(shState, shOut, false, SHELLY_HOST);
+            drawStatus("Shelly-Fehler!", COL_BEZUG);
+          }
+          // sonst: transienter Blip -> ignorieren, bisherige Anzeige bleibt stehen
         }
-      } else drawStatus("Shelly-Fehler!", COL_BEZUG);
+      }
+      else if (step == 1) {                    // Zendure (read-only)
+        if (millis() >= znPauseUntil) {        // nur abfragen, wenn keine Zendure-Pause laeuft
+          bool zk = fetchZendure();
+          updateHealth(znState, znOut, zk, ZEN_HOST);
+          if (!zk) znPauseUntil = millis() + ZEN_PAUSE_MS;   // haengt/offline -> 5 min Pause
+          else     znPauseUntil = 0;                          // antwortet wieder -> normal
+          drawZendure();
+        }
+        // sonst: Zendure-Pause aktiv -> nicht abfragen (entlastet Loop/WLAN-Stack), Anzeige bleibt
+      }
+      else {                                   // Slow: Zeit + Energie/Tagessaldo (kWh kommt vom Shelly)
+        if (fetchSlow()) { drawTime(); drawSaldo(); }
+      }
     }
-  }
-
-  if (now - lastZen >= ZEN_MS) {
-    lastZen = now;
-    if (WiFi.status() == WL_CONNECTED) { bool zk = fetchZendure(); updateHealth(znState, znOut, zk, ZEN_HOST); drawZendure(); }
-  }
-
-  if (now - lastSlow >= SLOW_MS) {
-    lastSlow = now;
-    if (WiFi.status() == WL_CONNECTED) { if (fetchSlow()) { drawTime(); drawSaldo(); } }
   }
 
   // Waechter-Anzeige: blinkender roter Rahmen + Banner bei Fehlbetrieb
