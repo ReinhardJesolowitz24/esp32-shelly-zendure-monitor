@@ -26,13 +26,14 @@
  *   und WLAN + Geraete-IPs eintragen. arduino_secrets.h ist .gitignore't.
  *
  * Arduino-IDE-Einstellungen (ELECROW, fuer das 7" HMI Display):
- *   - esp32 core by Espressif, Version 2.0.3
+ *   - esp32 core by Espressif, Version 2.0.17  (Fallback: Core 2.0.3 -> Git-Tag v1.1.0)
  *   - Board: "ESP32S3 Dev Module"
  *   - PSRAM: OPI PSRAM ; Flash Mode: QIO 80MHz
  *   - Flash Size: laut WROOM-1-Variante auf dem Schild (N16R8=16MB / N4R8=4MB)
  *   - Partition: "Huge APP (3MB No OTA/1MB SPIFFS)"
  *   - CPU: 240MHz (WiFi) ; Upload Speed: 921600
- *   - Library: LovyanGFX 1.1.12 (RGB-Panel-Treiber; 1.2.x auf Core 2.0.3 meiden).
+ *   - Library: LovyanGFX 1.2.24 (RGB-Panel-Treiber). Versions-Paarung beachten:
+ *     1.2.x <-> Core 2.0.17, 1.1.12 <-> Core 2.0.3 (nicht core-uebergreifend).
  *     Arduino_GFX 1.2.8 fuehrte unter WLAN-Last zu PSRAM/DMA-Speicherkorruption
  *     (Crash); LovyanGFX (besseres PSRAM/DMA-Mgmt) laeuft stabil (24h+ getestet).
  *   - Download-Modus falls noetig: BOOT halten, RESET druecken, dann Upload.
@@ -94,7 +95,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-2.0"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
+#define FW_VERSION "esp32-2.1"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -170,12 +171,11 @@ int dbBms = 0, dbSoc = 0, dbBal = 0, dbWarn = 0;
 int shState = 0, znState = 0;
 int shFailCount = 0;                 // aufeinanderfolgende Shelly-Fehlversuche (Entprellung)
 const int SH_FAIL_N = 3;             // "Shelly-Fehler" erst nach 3 Fehlern in Folge (transiente Blips ignorieren)
-unsigned int shOut = 0, znOut = 0;        // Ausfall-Episoden kumuliert (ok -> nicht-ok)
-unsigned int pshOut = 0, pznOut = 0;      // Snapshot der letzten Mitternacht
+unsigned int shOut = 0, znOut = 0;        // Ausfall-Episoden (taeglich um Mitternacht + bei Neustart auf 0)
 int  zFault = 0, zErr = 0;                  // BMS faultLevel / is_error
 const char* alarmText = "";
 bool dumpPrev = false, socPrev = false, faultPrev = false;   // Flankenerkennung
-unsigned int cntDump = 0, cntSoc = 0, cntFault = 0;          // Ereigniszaehler (Reset nur bei Neustart)
+unsigned int cntDump = 0, cntSoc = 0, cntFault = 0;          // Ereigniszaehler (Reset taeglich um Mitternacht + bei Neustart)
 
 // Differenzierung: gelbe Warnung (faultLevel) vs roter Kritisch-Alarm
 bool warnActive = false, warnPrev = false;
@@ -200,7 +200,6 @@ const int DAY_HIST = 30;
 DayRec dayHist[DAY_HIST];
 int dayHead = 0, dayStored = 0;
 unsigned int dayCount = 0;
-unsigned int pbms = 0, ptief = 0, pnetz = 0, pbal = 0, pwarn = 0;   // Zaehler-Snapshot der letzten Mitternacht
 int cellMax = 0, cellMin = 9999, tempMax = 0;   // worst-case Zellwerte ueber alle Packs
 const int CELL_MAX_CRIT = 370;    // 3.70 V echte Ueberspannung (normale LFP-Vollladung ~3.5-3.65 V; Einheit 0.01 V)
 const int CELL_MIN_CRIT = 260;    // 2.60 V Unterspannung
@@ -622,15 +621,15 @@ bool fetchSlow() {
       dayHist[dayHead].bezug = (impWh - impBase) / 1000.0;
       dayHist[dayHead].einsp = (retWh - retBase) / 1000.0;
       dayHist[dayHead].saldo = dayHist[dayHead].einsp - dayHist[dayHead].bezug;
-      dayHist[dayHead].bms  = cntFault   - pbms;     // Ereignisse an DIESEM Tag (Delta)
-      dayHist[dayHead].tief = cntSoc     - ptief;
-      dayHist[dayHead].netz = cntDump    - pnetz;
-      dayHist[dayHead].bal  = cntBalance - pbal;
-      dayHist[dayHead].warn = cntWarn    - pwarn;
-      dayHist[dayHead].shout = shOut - pshOut;
-      dayHist[dayHead].znout = znOut - pznOut;
-      pbms = cntFault; ptief = cntSoc; pnetz = cntDump; pbal = cntBalance; pwarn = cntWarn;
-      pshOut = shOut; pznOut = znOut;
+      dayHist[dayHead].bms  = cntFault;     // Tageswerte (Zaehler liefen seit Mitternacht ab 0)
+      dayHist[dayHead].tief = cntSoc;
+      dayHist[dayHead].netz = cntDump;
+      dayHist[dayHead].bal  = cntBalance;
+      dayHist[dayHead].warn = cntWarn;
+      dayHist[dayHead].shout = shOut;
+      dayHist[dayHead].znout = znOut;
+      cntFault = 0; cntSoc = 0; cntDump = 0; cntBalance = 0; cntWarn = 0;   // Live-Zaehler -> 0: Dashboard startet ruhig in den neuen Tag
+      shOut = 0; znOut = 0;
       dayHead = (dayHead + 1) % DAY_HIST;
       if (dayStored < DAY_HIST) dayStored++;
       impBase = impWh; retBase = retWh;
