@@ -52,6 +52,7 @@
 #include "esp_task_wdt.h"     // Hardware-Task-Watchdog (ESP32)
 #include "esp_system.h"       // esp_reset_reason()
 #include "arduino_secrets.h"  // WLAN + Geraete-IPs (NICHT eingecheckt)
+#include <Preferences.h>     // NVS: Tagessaldo-Baseline ueber Reboot/Stromaus retten
 
 // ── Display: ELECROW 7" RGB-Parallel-Panel via LovyanGFX ──────────────────────
 // LGFX-Konfig nach Vorlage LGFX_Sunton_ESP32-8048S070 (pin-identisch), angepasst:
@@ -93,7 +94,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-1.0"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
+#define FW_VERSION "esp32-1.1"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -505,6 +506,44 @@ int parseMinuteOfDay(const String& t) {
   return h * 60 + m;
 }
 
+// ── Tagessaldo-Persistenz (NVS): Baseline ueber Reboot/Stromaus retten ────────
+// Speichert {lokale Tagesnummer, impBase, retBase}. Nach einem Reset wird, sobald die
+// Zeit da ist, geprueft: gleicher Tag -> Baseline wiederherstellen (Saldo laeuft weiter),
+// sonst frische Baseline. Schreibzugriff nur ~1x/Tag (Rollover/erste Baseline) -> Flash ok.
+Preferences prefs;
+bool baseRestored = false;        // Baseline aus NVM wiederhergestellt (true) oder frisch (false)?
+unsigned long g_bootCount = 0;    // persistierter Boot-Zaehler (erkennt unbeobachtete Reboots)
+long localDayNumber() {            // lokale Kalendertag-Nummer aus UTC-Epoch + lokaler Uhrzeit
+  if (sysEpoch == 0) return -1;
+  int locMin = parseMinuteOfDay(curTime);
+  if (locMin < 0) return -1;
+  long utcMin = (long)((sysEpoch % 86400UL) / 60);
+  long off = locMin - utcMin;      // Zeitzonen-Offset (Minuten)
+  if (off >  720) off -= 1440;     // Tagesgrenzen-Wrap (max +-12h)
+  if (off < -720) off += 1440;
+  return ((long)sysEpoch + off * 60) / 86400;
+}
+void saveBaseline() {              // aktuelle Baseline + heutige Tagesnummer ins NVS
+  long d = localDayNumber();
+  if (d < 0) return;               // ohne gueltige Zeit nicht speichern
+  prefs.begin("saldo", false);
+  prefs.putLong("day", d);
+  prefs.putDouble("imp", impBase);
+  prefs.putDouble("ret", retBase);
+  prefs.end();
+}
+bool tryRestoreBaseline() {        // Baseline aus NVS holen, falls vom selben Tag
+  long today = localDayNumber();
+  if (today < 0) return false;
+  prefs.begin("saldo", true);      // readonly
+  long   d = prefs.getLong("day", -1);
+  double i = prefs.getDouble("imp", -1.0);
+  double r = prefs.getDouble("ret", -1.0);
+  prefs.end();
+  if (d == today && i >= 0 && r >= 0) { impBase = i; retBase = r; return true; }
+  return false;
+}
+
 bool fetchShelly() {
   if (!httpGetBody(SHELLY_HOST, SHELLY_PORT, SHELLY_PATH, httpBuf, sizeof(httpBuf))) return false;
   JsonDocument doc; if (deserializeJson(doc, httpBuf)) return false;
@@ -557,7 +596,20 @@ bool fetchSlow() {
   impWh = d2["total_act"]     | impWh;   // Bezug gesamt (Wh)
   retWh = d2["total_act_ret"] | retWh;   // Einspeisung gesamt (Wh)
 
-  if (!baseSet) { impBase = impWh; retBase = retWh; baseSet = true; }
+  if (!baseSet) {
+    if (localDayNumber() >= 0) {                 // erst mit gueltiger Zeit endgueltig setzen
+      if (tryRestoreBaseline()) {                // Heute-Eintrag im NVS -> Saldo laeuft weiter
+        baseRestored = true;
+      } else {                                   // kein Eintrag -> frische Baseline
+        impBase = impWh; retBase = retWh;
+        saveBaseline();
+        baseRestored = false;
+      }
+      baseSet = true;                            // ab jetzt fix (wiederhergestellt ODER frisch)
+    } else {
+      impBase = impWh; retBase = retWh;          // Zeit noch nicht da -> provisorisch (Anzeige ~0)
+    }
+  }
 
   // Mitternacht: Minute-im-Tag springt von ~23:xx (>1380) auf <01:00 (<60)
   int mod = parseMinuteOfDay(curTime);
@@ -582,6 +634,7 @@ bool fetchSlow() {
       dayHead = (dayHead + 1) % DAY_HIST;
       if (dayStored < DAY_HIST) dayStored++;
       impBase = impWh; retBase = retWh;
+      saveBaseline();                            // neuen Tag ins NVS persistieren
     }
     prevMod = mod;
   }
@@ -629,6 +682,10 @@ void sendJsonStatus(WiFiClient& c) {
   c.print(",\"zendure_out\":");   c.print(znOut);
   c.print(",\"reset_reason\":\""); c.print(resetReason); c.print("\"");
   c.print(",\"free_heap\":");     c.print(ESP.getFreeHeap());
+  c.print(",\"min_free_heap\":"); c.print(ESP.getMinFreeHeap());   // interner Heap-Tiefpunkt (ohne PSRAM, passt zu free_heap)
+  c.print(",\"rssi\":");          c.print(WiFi.RSSI());
+  c.print(",\"base_restored\":"); c.print(baseRestored ? "true" : "false");
+  c.print(",\"boots\":");         c.print(g_bootCount);
   c.print("}");
 }
 
@@ -718,6 +775,10 @@ void setup() {
   delay(200);
   resetReason = rrStr(esp_reset_reason());
   Serial.printf("Reset-Grund (letzter Boot): %s\n", resetReason);
+  prefs.begin("saldo", false);                       // persistierter Boot-Zaehler ++
+  g_bootCount = prefs.getULong("boots", 0) + 1;
+  prefs.putULong("boots", g_bootCount);
+  prefs.end();
 
   // Display init (LovyanGFX) - Backlight uebernimmt Light_PWM aus der LGFX-Konfig
   lcd.init();

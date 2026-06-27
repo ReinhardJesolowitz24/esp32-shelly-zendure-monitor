@@ -66,6 +66,26 @@ lvgl, …) and a factory test program for this panel:
 - Heartbeat + hardware watchdog (self-supervision), robust WiFi reconnect
 - JSON API: `/status`, `/balance` (cell-balancing history), `/daily` (30-day diary)
 - Own IP shown on the display
+- **Daily balance survives reboots & power loss** (NVS) — see [Persistence & resilience](#persistence--resilience-v11)
+
+## Persistence & resilience (v1.1)
+
+The daily energy balance is kept in **NVS** (the ESP32's non-volatile flash key-value
+store): on every reboot — including a real power cut — the board restores the day's
+baseline if the stored entry is from the *same local day*, so the saldo **continues**
+instead of resetting to zero. A fresh baseline is written only ~once per day (at the
+midnight rollover or the first start of a new day), so flash wear is negligible
+(~1 write/day). Validated on hardware across a **12-minute network outage** and a
+**cold power-cycle**.
+
+The `/status` API gained matching diagnostics:
+
+| Field | Meaning |
+|---|---|
+| `base_restored` | `true` if the day's saldo was restored from NVS after a reboot |
+| `boots` | persistent boot counter — reveals unobserved reboots |
+| `min_free_heap` | lowest free internal heap since boot (leak indicator) |
+| `rssi` | current WiFi signal strength (dBm) |
 
 ## Setup
 

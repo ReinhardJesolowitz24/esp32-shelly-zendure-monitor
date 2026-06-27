@@ -93,6 +93,15 @@ ESP32-S3-WROOM-1-N4R8      <-  4 MB Flash, 8 MB PSRAM
 - [ ] Zendure-Zeile zeigt SoC / Abgabe (oder „API haengt" / „OFFLINE")
 - [ ] Grüner Heartbeat-Punkt blinkt im Sekundentakt
 - [ ] JSON-API im Browser testen: `http://<board-ip>/status`
+- [ ] Im `/status` die neuen Diagnose-Felder prüfen: `boots` (Boot-Zähler),
+      `base_restored` (Tagessaldo aus NVS wiederhergestellt?), `min_free_heap`, `rssi`
+
+---
+
+> 💾 **Tagessaldo-Persistenz (ab v1.1):** Der Tagessaldo liegt im NVS und übersteht
+> Reboots/Stromausfall — nach einem Neustart am selben Tag läuft er weiter
+> (`base_restored:true` im `/status`) statt auf 0 zu springen. Kein extra Flash-Schritt
+> nötig; die Baseline wird nur ~1×/Tag geschrieben (Flash-Verschleiß vernachlässigbar).
 
 ---
 
