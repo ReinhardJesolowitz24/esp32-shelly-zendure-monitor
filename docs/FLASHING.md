@@ -24,9 +24,10 @@ ESP32-S3-WROOM-1-N4R8      <-  4 MB Flash, 8 MB PSRAM
 - [ ] In **File → Preferences → Additional Boards Manager URLs** eintragen:
       `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
 - [ ] **Tools → Board → Boards Manager** → „esp32" suchen →
-      **esp32 by Espressif, Version 2.0.3** installieren
-- [ ] **LovyanGFX 1.1.12** über den Library Manager installieren
-      (**1.2.x meiden** — kompiliert nicht auf Core 2.0.3; 1.1.9/1.1.12 sind die 2.0.3-Versionen)
+      **esp32 by Espressif, Version 2.0.17** installieren
+- [ ] **LovyanGFX 1.2.24** über den Library Manager installieren
+      (**Paarung beachten:** 1.2.x ↔ Core 2.0.17. Für den Fallback 2.0.3 nimm 1.1.12 —
+      siehe Tag `v1.1.0`. 1.1.x und 1.2.x sind NICHT core-übergreifend kompatibel.)
 - [ ] **ArduinoJson** (>= 7.x) über den Library Manager installieren
 
 ---
@@ -113,8 +114,8 @@ ESP32-S3-WROOM-1-N4R8      <-  4 MB Flash, 8 MB PSRAM
 | Bild flackert / verschoben / Farbsäume / Streifen rechts | Panel-Timing einer anderen Charge → LovyanGFX-Porches im Sketch anpassen (hsync/vsync front/back porch, `pclk_idle_high`) |
 | PSRAM-Zeile rot | „OPI PSRAM" nicht gewählt (Schritt 3) |
 | Compile-Fehler `arduino_secrets.h not found` | Schritt 2 vergessen |
-| Compile-Fehler bei `LovyanGFX` | zu neue Version (1.2.x) auf Core 2.0.3 → **1.1.12** nehmen |
-| Compile-Fehler bei `ledcSetup`/`esp_task_wdt_init` | Core ist nicht 2.0.3 → Schritt 1 prüfen |
+| Compile-Fehler bei `LovyanGFX` | Versions-Paarung falsch → **1.2.24 ↔ Core 2.0.17** (oder 1.1.12 ↔ 2.0.3); 1.1.x/1.2.x sind nicht core-übergreifend |
+| Compile-Fehler bei `ledcSetup`/`esp_task_wdt_init` | Core ist **3.x** (geänderte APIs) → eine **2.0.x**-Version nehmen (Schritt 1) |
 | Hängt in „Verbinde mit WLAN…" | SSID/Passwort in `arduino_secrets.h` falsch; 2,4-GHz-WLAN nötig (kein 5 GHz) |
 | „Shelly-Fehler!" | falsche Shelly-IP, oder Shelly nicht im selben Netz |
 

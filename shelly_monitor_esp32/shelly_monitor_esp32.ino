@@ -94,7 +94,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-1.1"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
+#define FW_VERSION "esp32-2.0"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
 #define SCREEN_W   800
 #define SCREEN_H   480
 

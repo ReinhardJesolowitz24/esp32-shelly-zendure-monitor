@@ -33,16 +33,25 @@ This is the cheaper sibling of the Arduino GIGA R1 version — same features, ~1
 
 - **WiFi** (ESP32 Arduino core) — native; `WiFiClient` / `WiFiServer`
 - **ArduinoJson** (>= 7.x)
-- **LovyanGFX 1.1.12** — RGB parallel panel driver.
-  **Pin to 1.1.12 (or 1.1.9) on core 2.0.3 — avoid 1.2.x** (it targets newer cores
-  and won't compile on 2.0.3). **NOT TFT_eSPI** — ELECROW confirms the 4.3″/5.0″/7.0″
-  HMI displays don't use it. **No LVGL needed** — LovyanGFX's Adafruit-GFX-style API
-  matches the GIGA drawing helpers, so the monitor draws directly.
+- **LovyanGFX 1.2.24** — RGB parallel panel driver.
+  **Version pairing matters:** use **1.2.x with core 2.0.17** (this release), or
+  **1.1.12 with core 2.0.3** (previous release, see the **`v1.1.0`** tag). 1.1.x won't
+  compile on the newer core and 1.2.x won't compile on 2.0.3 — keep the pair matched.
+  **NOT TFT_eSPI** — ELECROW confirms the 4.3″/5.0″/7.0″ HMI displays don't use it.
+  **No LVGL needed** — LovyanGFX's Adafruit-GFX-style API matches the GIGA drawing
+  helpers, so the monitor draws directly.
   - *Why LovyanGFX, not Arduino_GFX?* The first port used Arduino_GFX 1.2.8 and
     crashed every few hours: the RGB framebuffer DMA in PSRAM corrupted WiFi memory
     under normal load (PANIC / heap corruption). LovyanGFX's PSRAM/DMA management
-    fixes it — identical sketch logic, now 24 h+ stable.
+    fixes it — identical sketch logic, 24 h+ stable.
 - `esp_task_wdt` (ESP-IDF, built in) — hardware task watchdog (120 s)
+
+> **Recommended toolchain (v2.0.0): core 2.0.17 + LovyanGFX 1.2.24** — validated on
+> hardware (24 h+ stable, rode through a 12-min WiFi outage, daily balance preserved
+> across reboot/power-cut). It brings ongoing WiFi/stability fixes and the newer IDF
+> (4.4.2+, RGB bounce-buffer available) over the original 2.0.3. The earlier
+> **2.0.3 + LovyanGFX 1.1.12** combo remains a working fallback at the **`v1.1.0`** tag.
+> Stay on a **2.0.x** core — core 3.x changes APIs this sketch relies on.
 
 ELECROW ships its own library bundle (LovyanGFX, Arduino_GFX, gt911-arduino touch,
 lvgl, …) and a factory test program for this panel:
@@ -94,8 +103,9 @@ The `/status` API gained matching diagnostics:
 2. Fill in **all four** values: WiFi SSID/password + local IPs of the Shelly and Zendure.
    Give each device (and this board) a fixed IP (DHCP reservation) so addresses stay stable.
 3. Arduino IDE board settings (ELECROW, confirmed for the 7″ HMI display):
-   - Boards Manager → install **esp32 by Espressif, version 2.0.3**
+   - Boards Manager → install **esp32 by Espressif, version 2.0.17**
      (URL: `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`)
+     — pair with **LovyanGFX 1.2.24**. (For the 2.0.3 + 1.1.12 fallback, see the `v1.1.0` tag.)
    - Board: **ESP32S3 Dev Module**
    - **PSRAM: OPI PSRAM**  ·  Flash Mode: QIO 80MHz
    - Flash Size: depends on the ESP32-S3-WROOM-1 variant on the shield —
