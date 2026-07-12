@@ -96,12 +96,35 @@ The `/status` API gained matching diagnostics:
 | `min_free_heap` | lowest free internal heap since boot (leak indicator) |
 | `rssi` | current WiFi signal strength (dBm) |
 
+## Optional: Control-Watch tile (local controller supervision)
+
+If you also run the local
+[zero-feed-in controller](https://github.com/ReinhardJesolowitz24/zendure-regler-broker)
+(a *regler* + MQTT *broker* on separate boards), this monitor can supervise it and show a
+small **`CONTROL OK`** (green) / **`… DOWN`** (red) tile in the top bar — a glanceable,
+always-on health light on independent, diverse hardware.
+
+- Polls the controller's and broker's read-only `/status` every **20 s**.
+- Turns **red** — showing *which* side is silent (`REGLER DOWN` / `BROKER DOWN` /
+  `CONTROL DOWN`) — after more than `CONTROL_FAIL_N` (3) consecutive misses (~80 s;
+  set `CONTROL_FAIL_N = 2` for ~60 s).
+- **Off by default.** If you use the Zendure's own cloud/HEMS control (no local
+  controller), leave it off so you never see a false red. When disabled, *none* of this
+  code compiles — the monitor is byte-for-byte unchanged.
+
+**To enable:** set `#define CONTROL_WATCH_ENABLE 1` in the sketch and add the two IPs
+(`SECRET_REGLER_HOST`, `SECRET_BROKER_HOST`) to `arduino_secrets.h` (see the example
+file). Read-only, like everything else here. The tile state is also exposed in `/status`
+(`ctrl_state`, `ctrl_fail_r`, `ctrl_fail_b`).
+
 ## Setup
 
 1. Copy `shelly_monitor_esp32/arduino_secrets.example.h` →
    `shelly_monitor_esp32/arduino_secrets.h`
 2. Fill in **all four** values: WiFi SSID/password + local IPs of the Shelly and Zendure.
    Give each device (and this board) a fixed IP (DHCP reservation) so addresses stay stable.
+   *(The two extra `SECRET_REGLER_HOST` / `SECRET_BROKER_HOST` entries are only needed if
+   you enable the optional [Control-Watch tile](#optional-control-watch-tile-local-controller-supervision).)*
 3. Arduino IDE board settings (ELECROW, confirmed for the 7″ HMI display):
    - Boards Manager → install **esp32 by Espressif, version 2.0.17**
      (URL: `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`)
