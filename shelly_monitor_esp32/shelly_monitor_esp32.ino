@@ -100,7 +100,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-2.8"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
+#define FW_VERSION "esp32-2.9"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -204,9 +204,10 @@ const char* CTRL_BROKER_HOST = SECRET_BROKER_HOST;
 const unsigned long CONTROL_POLL_MS = 20000;   // Abfrage-Intervall (20 s)
 const int  CONTROL_FAIL_N = 3;                 // >CONTROL_FAIL_N Fehlversuche in Folge -> ROT (>3 ~ 80 s Stille bei 20 s-Takt)
 const unsigned long CONTROL_IO_MS = 1000;      // Connect-/Read-Timeout je controlAlive: kurz halten, damit ein STROMLOSES Ziel den Anzeige-Loop nicht lange blockiert (2026-07-13, war 2500)
+const int  CONTROL_MIN_CLIENTS = 2;            // Broker soll >=2 MQTT-Clients haben (Regler+Zendure). <2 = offener Regelkreis (Zendure/Regler nicht am Broker) -> "MQTT DOWN"
 unsigned long lastCtrlPoll = 0;
-int ctrlFailR = 0, ctrlFailB = 0;              // aufeinanderfolgende Fehlversuche je Ziel
-int ctrlState = -1;                            // -1=unbekannt, 0=ok, 1=Regler weg, 2=Broker weg, 3=beide weg
+int ctrlFailR = 0, ctrlFailB = 0, ctrlFailM = 0; // aufeinanderfolgende Fehlversuche je Ziel (M = Broker lebt aber clients<MIN)
+int ctrlState = -1;                            // -1=unbekannt, 0=ok, 1=Regler weg, 2=Broker weg, 3=beide weg, 4=MQTT down (Broker lebt, clients<MIN)
 int dcCtrl    = -2;                            // Dirty-Cache (Kachel nur bei Aenderung neu zeichnen)
 #endif
 
@@ -380,6 +381,7 @@ void drawControl(int st) {   // Kachel oben rechts (zwischen Titel und Uhr). Nur
     case 1:  col = COL_BEZUG;    t = "REGLER DOWN";  break;   // Regler stumm -> rot
     case 2:  col = COL_BEZUG;    t = "BROKER DOWN";  break;   // Broker stumm -> rot
     case 3:  col = COL_BEZUG;    t = "CONTROL DOWN"; break;   // beide weg -> rot
+    case 4:  col = COL_BEZUG;    t = "MQTT DOWN";    break;   // Boxen leben, aber Zendure/Regler nicht am Broker (clients<MIN) -> Kreis offen
     default: col = COL_UNIT;     t = "CONTROL ?";    break;   // -1 = noch keine Abfrage -> grau
   }
   lcd.fillRoundRect(420, 6, 150, 30, 4, col);
@@ -564,6 +566,28 @@ bool controlAlive(const char* host) {
   if (client.available()) { String s = client.readStringUntil('\n'); ok = (s.indexOf("200") != -1); }
   client.stop();
   return ok;
+}
+
+// Broker-Check MIT clients_connected (fuer "MQTT DOWN"): GET /status, Statuszeile pruefen + Body-Anfang lesen,
+// die Zahl hinter "clients_connected" parsen. Rueckgabe: >=0 = Broker lebt (clients-Zahl), -1 = tot.
+// clients<MIN (i.d.R. <2) = Zendure (oder Regler) nicht am Broker = Regelkreis OFFEN, obwohl die Boxen leben.
+int controlBrokerClients(const char* host) {
+  WiFiClient client;
+  if (!client.connect(host, 80, CONTROL_IO_MS)) return -1;
+  client.print("GET /status HTTP/1.0\r\nHost: monitor\r\nConnection: close\r\n\r\n");
+  unsigned long t = millis();
+  while (!client.available() && millis() - t < CONTROL_IO_MS) delay(5);
+  if (!client.available()) { client.stop(); return -1; }
+  String s = client.readStringUntil('\n');
+  if (s.indexOf("200") == -1) { client.stop(); return -1; }
+  char buf[512]; size_t n = 0; unsigned long t2 = millis();      // Body-Anfang reicht (Feld steht frueh im JSON)
+  while ((client.connected() || client.available()) && n < sizeof(buf) - 1 && millis() - t2 < CONTROL_IO_MS) {
+    if (client.available()) buf[n++] = (char)client.read(); else delay(2);
+  }
+  buf[n] = 0;
+  client.stop();
+  char* q = strstr(buf, "\"clients_connected\":");
+  return q ? atoi(q + 20) : CONTROL_MIN_CLIENTS;   // Feld nicht gefunden -> fail-safe als OK werten (kein Fehlalarm)
 }
 #endif
 
@@ -768,9 +792,10 @@ void sendJsonStatus(WiFiClient& c) {
   c.print(",\"base_restored\":"); c.print(baseRestored ? "true" : "false");
   c.print(",\"boots\":");         c.print(g_bootCount);
 #if CONTROL_WATCH_ENABLE
-  c.print(",\"ctrl_state\":");    c.print(ctrlState);     // -1=unbek,0=ok,1=Regler,2=Broker,3=beide weg
+  c.print(",\"ctrl_state\":");    c.print(ctrlState);     // -1=unbek,0=ok,1=Regler,2=Broker,3=beide,4=MQTT down
   c.print(",\"ctrl_fail_r\":");   c.print(ctrlFailR);
   c.print(",\"ctrl_fail_b\":");   c.print(ctrlFailB);
+  c.print(",\"ctrl_fail_m\":");   c.print(ctrlFailM);
 #endif
   c.print("}");
 }
@@ -962,12 +987,17 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED && now - lastCtrlPoll >= CONTROL_POLL_MS) {
     lastCtrlPoll = now;
     bool rOk = controlAlive(CTRL_REGLER_HOST);
-    bool bOk = controlAlive(CTRL_BROKER_HOST);
+    int  bClients = controlBrokerClients(CTRL_BROKER_HOST);   // >=0 = Broker lebt (clients-Zahl), -1 = tot
+    bool bOk = (bClients >= 0);
     ctrlFailR = rOk ? 0 : ctrlFailR + 1;
     ctrlFailB = bOk ? 0 : ctrlFailB + 1;
+    // MQTT DOWN: Broker lebt, aber <MIN Clients am MQTT (Zendure/Regler nicht dran = offener Kreis). Entprellt,
+    //   damit ein kurzer Regler-Reconnect (clients transient 1/3) kein falsches MQTT DOWN ausloest.
+    ctrlFailM = (bOk && bClients < CONTROL_MIN_CLIENTS) ? ctrlFailM + 1 : 0;
     bool rDown = ctrlFailR > CONTROL_FAIL_N;   // "mehr als CONTROL_FAIL_N in Folge"
     bool bDown = ctrlFailB > CONTROL_FAIL_N;
-    ctrlState = (rDown && bDown) ? 3 : (rDown ? 1 : (bDown ? 2 : 0));
+    bool mqttDown = ctrlFailM > CONTROL_FAIL_N;
+    ctrlState = (rDown && bDown) ? 3 : (rDown ? 1 : (bDown ? 2 : (mqttDown ? 4 : 0)));
     drawControl(ctrlState);
     if (wdtActive) esp_task_wdt_reset();       // nach evtl. langsamer Abfrage Watchdog fuettern
   }
