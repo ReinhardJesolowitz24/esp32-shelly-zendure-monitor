@@ -100,7 +100,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-2.9"   // in /status gemeldet (Feld "fw"); "build" = Compile-Zeit erkennt veraltete Flashes
+#define FW_VERSION "esp32-2.10"  // 2.10: Control-Watch um "ZENDURE STALE" (Zustand 5) erweitert -- liest tele_stale vom Regler, entprellt (>CONTROL_ZEN_STALE_N Polls) -> erkennt eingefrorene/nicht-antwortende Zendure (Geraete-Freeze) 24/7, unabhaengig vom Notebook. Basis 2.9. // in /status (Feld "fw"); "build" = Compile-Zeit
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -205,9 +205,10 @@ const unsigned long CONTROL_POLL_MS = 20000;   // Abfrage-Intervall (20 s)
 const int  CONTROL_FAIL_N = 3;                 // >CONTROL_FAIL_N Fehlversuche in Folge -> ROT (>3 ~ 80 s Stille bei 20 s-Takt)
 const unsigned long CONTROL_IO_MS = 1000;      // Connect-/Read-Timeout je controlAlive: kurz halten, damit ein STROMLOSES Ziel den Anzeige-Loop nicht lange blockiert (2026-07-13, war 2500)
 const int  CONTROL_MIN_CLIENTS = 2;            // Broker soll >=2 MQTT-Clients haben (Regler+Zendure). <2 = offener Regelkreis (Zendure/Regler nicht am Broker) -> "MQTT DOWN"
+const int  CONTROL_ZEN_STALE_N = 6;            // >N tele_stale-Polls in Folge (bei 20s-Takt ~140s) = Zendure-Telemetrie eingefroren -> "ZENDURE STALE". Lang genug entprellt gegen kurze Sleeps/Wake-Latenz.
 unsigned long lastCtrlPoll = 0;
-int ctrlFailR = 0, ctrlFailB = 0, ctrlFailM = 0; // aufeinanderfolgende Fehlversuche je Ziel (M = Broker lebt aber clients<MIN)
-int ctrlState = -1;                            // -1=unbekannt, 0=ok, 1=Regler weg, 2=Broker weg, 3=beide weg, 4=MQTT down (Broker lebt, clients<MIN)
+int ctrlFailR = 0, ctrlFailB = 0, ctrlFailM = 0, ctrlFailZ = 0; // aufeinanderfolgende Fehlversuche je Ziel (M=Broker lebt aber clients<MIN; Z=Regler lebt aber tele_stale)
+int ctrlState = -1;                            // -1=unbekannt, 0=ok, 1=Regler weg, 2=Broker weg, 3=beide weg, 4=MQTT down (clients<MIN), 5=ZENDURE STALE (Regler lebt, tele_stale)
 int dcCtrl    = -2;                            // Dirty-Cache (Kachel nur bei Aenderung neu zeichnen)
 #endif
 
@@ -382,6 +383,7 @@ void drawControl(int st) {   // Kachel oben rechts (zwischen Titel und Uhr). Nur
     case 2:  col = COL_BEZUG;    t = "BROKER DOWN";  break;   // Broker stumm -> rot
     case 3:  col = COL_BEZUG;    t = "CONTROL DOWN"; break;   // beide weg -> rot
     case 4:  col = COL_BEZUG;    t = "MQTT DOWN";    break;   // Boxen leben, aber Zendure/Regler nicht am Broker (clients<MIN) -> Kreis offen
+    case 5:  col = COL_ZEN;      t = "ZENDURE STALE";break;   // Regler+Broker leben, aber Zendure-Telemetrie eingefroren (Geraete-Freeze) -> gelbe Warnung
     default: col = COL_UNIT;     t = "CONTROL ?";    break;   // -1 = noch keine Abfrage -> grau
   }
   lcd.fillRoundRect(420, 6, 150, 30, 4, col);
@@ -556,7 +558,8 @@ bool httpGetBody(const char* host, int port, const char* path, char* out, size_t
 #if CONTROL_WATCH_ENABLE
 // Leichtgewichtiger Liveness-Check: GET /status, nur Statuszeile lesen (200 = lebt).
 // Kurze Timeouts (2,5 s), damit ein totes Ziel die Anzeige-Loop nicht lange blockiert.
-bool controlAlive(const char* host) {
+bool controlAlive(const char* host, bool* teleStale = nullptr) {
+  if (teleStale) *teleStale = false;
   WiFiClient client;
   if (!client.connect(host, 80, CONTROL_IO_MS)) return false;     // kein TCP -> tot (kurzer Connect-Timeout)
   client.print("GET /status HTTP/1.0\r\nHost: monitor\r\nConnection: close\r\n\r\n");
@@ -564,6 +567,15 @@ bool controlAlive(const char* host) {
   while (!client.available() && millis() - t < CONTROL_IO_MS) delay(5);   // max CONTROL_IO_MS auf Antwort
   bool ok = false;
   if (client.available()) { String s = client.readStringUntil('\n'); ok = (s.indexOf("200") != -1); }
+  if (ok && teleStale) {   // Body lesen und "tele_stale":true suchen (= Zendure-Telemetrie eingefroren, Geraete-Freeze)
+    char buf[800]; size_t n = 0; unsigned long t2 = millis();     // tele_stale steht ~Byte 550 im Response -> grosser Puffer
+    while ((client.connected() || client.available()) && n < sizeof(buf) - 1 && millis() - t2 < CONTROL_IO_MS) {
+      if (client.available()) buf[n++] = (char)client.read(); else delay(2);
+    }
+    buf[n] = 0;
+    char* q = strstr(buf, "\"tele_stale\":");
+    if (q) *teleStale = (strncmp(q + 13, "true", 4) == 0);        // Feld nicht gefunden -> false (kein Fehlalarm)
+  }
   client.stop();
   return ok;
 }
@@ -796,6 +808,7 @@ void sendJsonStatus(WiFiClient& c) {
   c.print(",\"ctrl_fail_r\":");   c.print(ctrlFailR);
   c.print(",\"ctrl_fail_b\":");   c.print(ctrlFailB);
   c.print(",\"ctrl_fail_m\":");   c.print(ctrlFailM);
+  c.print(",\"ctrl_fail_z\":");   c.print(ctrlFailZ);
 #endif
   c.print("}");
 }
@@ -986,7 +999,8 @@ void loop() {
   // Timeouts nur wenige Sekunden, falls ein Ziel tot ist.
   if (WiFi.status() == WL_CONNECTED && now - lastCtrlPoll >= CONTROL_POLL_MS) {
     lastCtrlPoll = now;
-    bool rOk = controlAlive(CTRL_REGLER_HOST);
+    bool teleStale = false;
+    bool rOk = controlAlive(CTRL_REGLER_HOST, &teleStale);
     int  bClients = controlBrokerClients(CTRL_BROKER_HOST);   // >=0 = Broker lebt (clients-Zahl), -1 = tot
     bool bOk = (bClients >= 0);
     ctrlFailR = rOk ? 0 : ctrlFailR + 1;
@@ -994,10 +1008,13 @@ void loop() {
     // MQTT DOWN: Broker lebt, aber <MIN Clients am MQTT (Zendure/Regler nicht dran = offener Kreis). Entprellt,
     //   damit ein kurzer Regler-Reconnect (clients transient 1/3) kein falsches MQTT DOWN ausloest.
     ctrlFailM = (bOk && bClients < CONTROL_MIN_CLIENTS) ? ctrlFailM + 1 : 0;
+    // ZENDURE STALE: Regler lebt, meldet aber tele_stale (Zendure echot/telemetriert nicht = Geraete-Freeze). Lang entprellt.
+    ctrlFailZ = (rOk && teleStale) ? ctrlFailZ + 1 : 0;
     bool rDown = ctrlFailR > CONTROL_FAIL_N;   // "mehr als CONTROL_FAIL_N in Folge"
     bool bDown = ctrlFailB > CONTROL_FAIL_N;
     bool mqttDown = ctrlFailM > CONTROL_FAIL_N;
-    ctrlState = (rDown && bDown) ? 3 : (rDown ? 1 : (bDown ? 2 : (mqttDown ? 4 : 0)));
+    bool zenStale = ctrlFailZ > CONTROL_ZEN_STALE_N;
+    ctrlState = (rDown && bDown) ? 3 : (rDown ? 1 : (bDown ? 2 : (mqttDown ? 4 : (zenStale ? 5 : 0))));
     drawControl(ctrlState);
     if (wdtActive) esp_task_wdt_reset();       // nach evtl. langsamer Abfrage Watchdog fuettern
   }
