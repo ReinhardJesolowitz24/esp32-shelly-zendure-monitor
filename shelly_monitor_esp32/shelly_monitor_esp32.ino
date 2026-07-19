@@ -100,7 +100,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-2.11"  // 2.11: Kachel-Label auf "ZEN STALE" gekuerzt (passt sauber in die 150px-Kachel). Basis 2.10 (Control-Watch Zustand 5, Freeze-Erkennung via tele_stale vom Regler, entprellt, 24/7). // in /status (Feld "fw"); "build" = Compile-Zeit
+#define FW_VERSION "esp32-2.12"  // 2.12: kumulativer NVS-persistenter ZEN-STALE-Ereigniszaehler (zen_stale_count in /status), ++1 je Eintritt in Zustand 5 -> Freeze-Ueberwachung per gelegentlicher Abfrage, kein Notebook-Logger noetig. Basis 2.11 (Label ZEN STALE; 2.10 Control-Watch Zustand 5). // in /status (Feld "fw"); "build" = Compile-Zeit
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -618,6 +618,7 @@ int parseMinuteOfDay(const String& t) {
 Preferences prefs;
 bool baseRestored = false;        // Baseline aus NVM wiederhergestellt (true) oder frisch (false)?
 unsigned long g_bootCount = 0;    // persistierter Boot-Zaehler (erkennt unbeobachtete Reboots)
+uint32_t g_zenStaleCount = 0;     // kumulativer ZEN-STALE-Ereigniszaehler (NVS-persistent): ++1 je Eintritt in Zustand 5
 long localDayNumber() {            // lokale Kalendertag-Nummer aus UTC-Epoch + lokaler Uhrzeit
   if (sysEpoch == 0) return -1;
   int locMin = parseMinuteOfDay(curTime);
@@ -809,6 +810,7 @@ void sendJsonStatus(WiFiClient& c) {
   c.print(",\"ctrl_fail_b\":");   c.print(ctrlFailB);
   c.print(",\"ctrl_fail_m\":");   c.print(ctrlFailM);
   c.print(",\"ctrl_fail_z\":");   c.print(ctrlFailZ);
+  c.print(",\"zen_stale_count\":"); c.print(g_zenStaleCount);   // kumulativ, NVS-persistent -> Freeze-Ueberwachung per Abfrage
 #endif
   c.print("}");
 }
@@ -902,6 +904,7 @@ void setup() {
   prefs.begin("saldo", false);                       // persistierter Boot-Zaehler ++
   g_bootCount = prefs.getULong("boots", 0) + 1;
   prefs.putULong("boots", g_bootCount);
+  g_zenStaleCount = prefs.getULong("zenstale", 0);   // kumulativen ZEN-STALE-Zaehler laden (ueberlebt Reboot)
   prefs.end();
 
   // Display init (LovyanGFX) - Backlight uebernimmt Light_PWM aus der LGFX-Konfig
@@ -1014,7 +1017,12 @@ void loop() {
     bool bDown = ctrlFailB > CONTROL_FAIL_N;
     bool mqttDown = ctrlFailM > CONTROL_FAIL_N;
     bool zenStale = ctrlFailZ > CONTROL_ZEN_STALE_N;
+    int prevCtrlState = ctrlState;
     ctrlState = (rDown && bDown) ? 3 : (rDown ? 1 : (bDown ? 2 : (mqttDown ? 4 : (zenStale ? 5 : 0))));
+    if (ctrlState == 5 && prevCtrlState != 5) {        // NEUES ZEN-STALE-Ereignis (Eintritt) -> kumulativen Zaehler ++ und NVS-persistent sichern
+      g_zenStaleCount++;
+      prefs.begin("saldo", false); prefs.putULong("zenstale", g_zenStaleCount); prefs.end();
+    }
     drawControl(ctrlState);
     if (wdtActive) esp_task_wdt_reset();       // nach evtl. langsamer Abfrage Watchdog fuettern
   }
