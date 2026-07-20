@@ -100,7 +100,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-2.12"  // 2.12: kumulativer NVS-persistenter ZEN-STALE-Ereigniszaehler (zen_stale_count in /status), ++1 je Eintritt in Zustand 5 -> Freeze-Ueberwachung per gelegentlicher Abfrage, kein Notebook-Logger noetig. Basis 2.11 (Label ZEN STALE; 2.10 Control-Watch Zustand 5). // in /status (Feld "fw"); "build" = Compile-Zeit
+#define FW_VERSION "esp32-2.13"  // 2.13: kumulative persistente Zaehler jetzt fuer ALLE Control-Watch-Zustaende (regler_down/broker_down/control_down/mqtt_down_count + zen_stale_count in /status), ++1 je Zustands-Eintritt, NVS-persistent -> komplette Langzeit-Zuverlaessigkeits-Historie per Abfrage. Basis 2.12 (zen_stale_count). // in /status (Feld "fw"); "build" = Compile-Zeit
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -619,6 +619,7 @@ Preferences prefs;
 bool baseRestored = false;        // Baseline aus NVM wiederhergestellt (true) oder frisch (false)?
 unsigned long g_bootCount = 0;    // persistierter Boot-Zaehler (erkennt unbeobachtete Reboots)
 uint32_t g_zenStaleCount = 0;     // kumulativer ZEN-STALE-Ereigniszaehler (NVS-persistent): ++1 je Eintritt in Zustand 5
+uint32_t g_reglerDownCount = 0, g_brokerDownCount = 0, g_controlDownCount = 0, g_mqttDownCount = 0; // dito je Eintritt in Zustand 1/2/3/4 (NVS-persistent)
 long localDayNumber() {            // lokale Kalendertag-Nummer aus UTC-Epoch + lokaler Uhrzeit
   if (sysEpoch == 0) return -1;
   int locMin = parseMinuteOfDay(curTime);
@@ -811,6 +812,10 @@ void sendJsonStatus(WiFiClient& c) {
   c.print(",\"ctrl_fail_m\":");   c.print(ctrlFailM);
   c.print(",\"ctrl_fail_z\":");   c.print(ctrlFailZ);
   c.print(",\"zen_stale_count\":"); c.print(g_zenStaleCount);   // kumulativ, NVS-persistent -> Freeze-Ueberwachung per Abfrage
+  c.print(",\"regler_down_count\":");  c.print(g_reglerDownCount);
+  c.print(",\"broker_down_count\":");  c.print(g_brokerDownCount);
+  c.print(",\"control_down_count\":"); c.print(g_controlDownCount);
+  c.print(",\"mqtt_down_count\":");    c.print(g_mqttDownCount);
 #endif
   c.print("}");
 }
@@ -905,6 +910,8 @@ void setup() {
   g_bootCount = prefs.getULong("boots", 0) + 1;
   prefs.putULong("boots", g_bootCount);
   g_zenStaleCount = prefs.getULong("zenstale", 0);   // kumulativen ZEN-STALE-Zaehler laden (ueberlebt Reboot)
+  g_reglerDownCount = prefs.getULong("reglerdown", 0); g_brokerDownCount = prefs.getULong("brokerdown", 0);
+  g_controlDownCount = prefs.getULong("controldown", 0); g_mqttDownCount = prefs.getULong("mqttdown", 0);
   prefs.end();
 
   // Display init (LovyanGFX) - Backlight uebernimmt Light_PWM aus der LGFX-Konfig
@@ -1019,9 +1026,16 @@ void loop() {
     bool zenStale = ctrlFailZ > CONTROL_ZEN_STALE_N;
     int prevCtrlState = ctrlState;
     ctrlState = (rDown && bDown) ? 3 : (rDown ? 1 : (bDown ? 2 : (mqttDown ? 4 : (zenStale ? 5 : 0))));
-    if (ctrlState == 5 && prevCtrlState != 5) {        // NEUES ZEN-STALE-Ereignis (Eintritt) -> kumulativen Zaehler ++ und NVS-persistent sichern
-      g_zenStaleCount++;
-      prefs.begin("saldo", false); prefs.putULong("zenstale", g_zenStaleCount); prefs.end();
+    if (ctrlState != prevCtrlState && ctrlState >= 1) {   // NEUER Problem-Zustand (Eintritt) -> passenden kumulativen Zaehler ++ und NVS-persistent sichern
+      prefs.begin("saldo", false);
+      switch (ctrlState) {
+        case 1: g_reglerDownCount++;  prefs.putULong("reglerdown",  g_reglerDownCount);  break;
+        case 2: g_brokerDownCount++;  prefs.putULong("brokerdown",  g_brokerDownCount);  break;
+        case 3: g_controlDownCount++; prefs.putULong("controldown", g_controlDownCount); break;
+        case 4: g_mqttDownCount++;    prefs.putULong("mqttdown",    g_mqttDownCount);    break;
+        case 5: g_zenStaleCount++;    prefs.putULong("zenstale",    g_zenStaleCount);    break;
+      }
+      prefs.end();
     }
     drawControl(ctrlState);
     if (wdtActive) esp_task_wdt_reset();       // nach evtl. langsamer Abfrage Watchdog fuettern
