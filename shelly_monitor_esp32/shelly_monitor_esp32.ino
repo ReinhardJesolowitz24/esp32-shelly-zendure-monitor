@@ -100,7 +100,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-2.13"  // 2.13: kumulative persistente Zaehler jetzt fuer ALLE Control-Watch-Zustaende (regler_down/broker_down/control_down/mqtt_down_count + zen_stale_count in /status), ++1 je Zustands-Eintritt, NVS-persistent -> komplette Langzeit-Zuverlaessigkeits-Historie per Abfrage. Basis 2.12 (zen_stale_count). // in /status (Feld "fw"); "build" = Compile-Zeit
+#define FW_VERSION "esp32-2.14"  // 2.14: CONTROL_IO_MS 1000->1750 (Poll-Timeout): 750ms beob. Regler-Kalt-Poll-Max + 1000ms Reserve -> eliminiert falsche REGLER/CONTROL DOWN durch Netz-/Kalt-Connect-Jitter (Signal-Reinheit: Zaehler = echtes Problem). Basis 2.13 (kumulative Zustands-Zaehler). // in /status (Feld "fw"); "build" = Compile-Zeit
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -197,13 +197,13 @@ int balSpread = 0, balSpreadMax = 0;   // Zellspreizung beim Balancing (mV): let
 //   SECRET_REGLER_HOST + SECRET_BROKER_HOST eintragen (feste IPs des Steuer-Duos).
 // Default AUS, weil ein Nutzer OHNE lokalen Regler (z.B. reine Cloud-/HEMS-Regelung)
 // sonst faelschlich Dauer-Rot saehe. Rein LESEND (GET /status) -> stoert nichts.
-#define CONTROL_WATCH_ENABLE 0
+#define CONTROL_WATCH_ENABLE 1
 #if CONTROL_WATCH_ENABLE
 const char* CTRL_REGLER_HOST = SECRET_REGLER_HOST;
 const char* CTRL_BROKER_HOST = SECRET_BROKER_HOST;
 const unsigned long CONTROL_POLL_MS = 20000;   // Abfrage-Intervall (20 s)
 const int  CONTROL_FAIL_N = 3;                 // >CONTROL_FAIL_N Fehlversuche in Folge -> ROT (>3 ~ 80 s Stille bei 20 s-Takt)
-const unsigned long CONTROL_IO_MS = 1000;      // Connect-/Read-Timeout je controlAlive: kurz halten, damit ein STROMLOSES Ziel den Anzeige-Loop nicht lange blockiert (2026-07-13, war 2500)
+const unsigned long CONTROL_IO_MS = 1750;      // Connect-/Read-Timeout je controlAlive. 1750 = 750ms beob. Regler-Kalt-Poll-Max + 1000ms Reserve -> eliminiert FALSCHE REGLER/CONTROL DOWN durch Netz-/Kalt-Jitter (Debounce >3 = 4x in Folge). Trade-off: blockiert bei STROMLOSEM Ziel den Anzeige-Loop bis 1750ms/Poll (2026-07-24; war 1000, davor 2500)
 const int  CONTROL_MIN_CLIENTS = 2;            // Broker soll >=2 MQTT-Clients haben (Regler+Zendure). <2 = offener Regelkreis (Zendure/Regler nicht am Broker) -> "MQTT DOWN"
 const int  CONTROL_ZEN_STALE_N = 6;            // >N tele_stale-Polls in Folge (bei 20s-Takt ~140s) = Zendure-Telemetrie eingefroren -> "ZENDURE STALE". Lang genug entprellt gegen kurze Sleeps/Wake-Latenz.
 unsigned long lastCtrlPoll = 0;
