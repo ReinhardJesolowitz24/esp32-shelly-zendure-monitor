@@ -6,7 +6,7 @@
  * Budget ESP32-S3 port of the Arduino GIGA R1 version:
  *   https://github.com/ReinhardJesolowitz24/gigar1-shelly-zendure-monitor
  *
- * NUR LESEN. Schreibt NICHTS an den Zendure -> stoert die Cloud-/HEMS-Regelung nicht.
+ * NUR LESEN. Schreibt NICHTS an den Zendure -> stoert weder Cloud-HEMS noch einen lokalen Regler.
  *
  * Anzeige:
  *   - Uhrzeit (vom Shelly, lokal/DST-korrekt) oben rechts + Heartbeat-Punkt
@@ -14,7 +14,10 @@
  *   - pro Phase L1/L2/L3: Wirkleistung [W], Spannung [V], Strom [A]
  *   - Zendure (read-only): SoC, Abgabe, acStatus
  *   - Tagessaldo [kWh] seit 0:00 Uhr (+ = mehr Einspeisung, - = mehr Bezug),
- *     Reset automatisch um Mitternacht (aus echten Shelly-Energiezaehlern)
+ *     Reset automatisch um Mitternacht (aus echten Shelly-Energiezaehlern).
+ *     Hinweis: Bezug/Einspeisung = Shelly total_act/total_act_ret = JE PHASE brutto summiert. Speist eine
+ *     Phase ein, waehrend eine andere bezieht, zaehlen beide -> Bezug UND Einspeisung erscheinen hoeher als
+ *     an einem phasen-saldierenden Netzzaehler. Der Saldo (Einspeisung - Bezug) entspricht dem Netto.
  *   - Waechter: roter Alarm bei Netz-Dumping / Tiefentladung / BMS-Fehler,
  *     mit Ereigniszaehlern. Plus Hardware-Watchdog (Selbstueberwachung).
  *
@@ -161,7 +164,7 @@ double impBase=0, retBase=0;       // Basis seit 0:00 Uhr
 bool   baseSet=false;
 double bezugKwh=0, einspKwh=0, saldoKwh=0;
 
-// Waechter / Alarm: Akku entlaedt UND Netz speist ein = HEMS-Fehlbetrieb
+// Waechter / Alarm: Akku entlaedt UND Netz speist ein = Regel-Fehlbetrieb (Cloud-HEMS oder lokaler Regler)
 const float         ALARM_OUT  = 200.0;    // W Zendure-Abgabe-Schwelle
 const float         ALARM_EXP  = 300.0;    // W Netz-Einspeisung (Monitor positiv)
 const unsigned long ALARM_HOLD = 30000;    // ms anhaltend, bevor Alarm ausloest
@@ -557,7 +560,7 @@ bool httpGetBody(const char* host, int port, const char* path, char* out, size_t
 
 #if CONTROL_WATCH_ENABLE
 // Leichtgewichtiger Liveness-Check: GET /status, nur Statuszeile lesen (200 = lebt).
-// Kurze Timeouts (2,5 s), damit ein totes Ziel die Anzeige-Loop nicht lange blockiert.
+// Timeout je Schritt CONTROL_IO_MS (1750 ms), damit ein totes Ziel die Anzeige-Loop nicht lange blockiert.
 bool controlAlive(const char* host, bool* teleStale = nullptr) {
   if (teleStale) *teleStale = false;
   WiFiClient client;
@@ -806,7 +809,7 @@ void sendJsonStatus(WiFiClient& c) {
   c.print(",\"base_restored\":"); c.print(baseRestored ? "true" : "false");
   c.print(",\"boots\":");         c.print(g_bootCount);
 #if CONTROL_WATCH_ENABLE
-  c.print(",\"ctrl_state\":");    c.print(ctrlState);     // -1=unbek,0=ok,1=Regler,2=Broker,3=beide,4=MQTT down
+  c.print(",\"ctrl_state\":");    c.print(ctrlState);     // -1=unbek,0=ok,1=Regler,2=Broker,3=beide,4=MQTT down,5=ZEN STALE
   c.print(",\"ctrl_fail_r\":");   c.print(ctrlFailR);
   c.print(",\"ctrl_fail_b\":");   c.print(ctrlFailB);
   c.print(",\"ctrl_fail_m\":");   c.print(ctrlFailM);
@@ -880,8 +883,8 @@ void handleApi() {
     c.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n");
     c.print("ShellyMonitor API:  /status   /balance   /daily");
   }
-  c.flush();        // sicherstellen, dass auch kleine Antworten ('/daily' leer) raus sind
-  delay(10);        // kurz warten, bevor der Socket geschlossen wird (sonst TCP-RST -> Datenverlust)
+  c.flush();        // Core 2.0.x: verwirft nur noch ungelesene REQUEST-Daten (Empfangspuffer), wartet NICHT auf das Senden
+  delay(10);        // DAS sichert kleine Antworten ('/daily' leer): kurz warten vor stop() (sonst TCP-RST -> Datenverlust)
   c.stop();
 }
 
