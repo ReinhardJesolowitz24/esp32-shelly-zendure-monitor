@@ -109,7 +109,7 @@ public:
 };
 LGFX lcd;
 
-#define FW_VERSION "esp32-2.18"  // 2.18: Tages-Datensatz-Drift (w_drift_ppm_x10) korrigiert: beide Uhren ueber dieselbe Strecke (millis() beim Empfang der Shelly-Zeit gemerkt) statt millis()/1000 vs. Shelly-Uptime -> vorher ~25 s Boot-Versatz + Abfrage-Jitter (2.17 zeigte 1205 statt ~320 ppm); Drift erst ab 6 h Laufzeit; /status uptime_mcu_s unveraendert. 2.17: persistenter Tages-Datensatz (dayrec.h, 1000 Tage x 192 B in LittleFS) inkl. Regler-/Broker-Block + Regelguete; /daily neu (Paging), /daily/cur, /daily/info; Regler/Broker-/status 1x/min voll gelesen (gleiche Anfrage); Tageswechsel jetzt ueber Tagesnummer statt Minutensprung (greift auch nach Ausfall ueber Mitternacht). 2.16: grosses SoC-Feld zeigt bei Zendure-Fehlversuch/Pause den letzten Wert GRAU statt "-- %" ("-- %" nur bis zum ersten Wert). 2.15: grosses Feld oben geteilt -> links Netz gesamt [W], rechts Zendure-SoC [%] gross + farbig (rot <=40 / gelb 41-79 / gruen >=80); sonst unveraendert. 2.14: CONTROL_IO_MS 1000->1750 (Poll-Timeout): 750ms beob. Regler-Kalt-Poll-Max + 1000ms Reserve -> eliminiert falsche REGLER/CONTROL DOWN durch Netz-/Kalt-Connect-Jitter (Signal-Reinheit: Zaehler = echtes Problem). Basis 2.13 (kumulative Zustands-Zaehler). // in /status (Feld "fw"); "build" = Compile-Zeit
+#define FW_VERSION "esp32-2.19"  // 2.19: Tages-Datensatz-Minutentakt im festen Raster (lastDrMin += 60 s statt = now) -> Loop-Verspaetung summierte sich auf (2.18: 1408 statt 1440 min/Tag, INCOMPLETE-Flag jeden Tag, m_*-Minuten ~2 % zu klein); nach >5 min Blockade Neuaufsetzen. 2.18: Tages-Datensatz-Drift (w_drift_ppm_x10) korrigiert: beide Uhren ueber dieselbe Strecke (millis() beim Empfang der Shelly-Zeit gemerkt) statt millis()/1000 vs. Shelly-Uptime -> vorher ~25 s Boot-Versatz + Abfrage-Jitter (2.17 zeigte 1205 statt ~320 ppm); Drift erst ab 6 h Laufzeit; /status uptime_mcu_s unveraendert. 2.17: persistenter Tages-Datensatz (dayrec.h, 1000 Tage x 192 B in LittleFS) inkl. Regler-/Broker-Block + Regelguete; /daily neu (Paging), /daily/cur, /daily/info; Regler/Broker-/status 1x/min voll gelesen (gleiche Anfrage); Tageswechsel jetzt ueber Tagesnummer statt Minutensprung (greift auch nach Ausfall ueber Mitternacht). 2.16: grosses SoC-Feld zeigt bei Zendure-Fehlversuch/Pause den letzten Wert GRAU statt "-- %" ("-- %" nur bis zum ersten Wert). 2.15: grosses Feld oben geteilt -> links Netz gesamt [W], rechts Zendure-SoC [%] gross + farbig (rot <=40 / gelb 41-79 / gruen >=80); sonst unveraendert. 2.14: CONTROL_IO_MS 1000->1750 (Poll-Timeout): 750ms beob. Regler-Kalt-Poll-Max + 1000ms Reserve -> eliminiert falsche REGLER/CONTROL DOWN durch Netz-/Kalt-Connect-Jitter (Signal-Reinheit: Zaehler = echtes Problem). Basis 2.13 (kumulative Zustands-Zaehler). // in /status (Feld "fw"); "build" = Compile-Zeit
 #define SCREEN_W   800
 #define SCREEN_H   480
 
@@ -1125,7 +1125,9 @@ void loop() {
 #endif
 
   // Tages-Datensatz: Minuten-Takt (Zaehler, Min/Max, Zustands-Minuten; stuendlich Checkpoint ins Flash)
-  if (now - lastDrMin >= 60000UL) { lastDrMin = now; drMinute(); }
+  // fester Minuten-Raster (+= 60 s): Loop-Verspaetung (z. B. Zendure-HTTP bis 18 s) summiert sich nicht auf;
+  // nach > 5 min Blockade neu aufsetzen statt die verpassten Minuten im Schnelldurchlauf nachzuholen
+  if (now - lastDrMin >= 60000UL) { lastDrMin = (now - lastDrMin < 300000UL) ? lastDrMin + 60000UL : now; drMinute(); }
 
   // Waechter-Anzeige: blinkender roter Rahmen + Banner bei Fehlbetrieb
   if (alarmActive) {
